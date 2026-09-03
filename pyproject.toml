@@ -1,0 +1,35 @@
+[project]
+name = "aiops-mcp-servers"
+version = "0.1.0"
+description = "AIOps MCP Servers — monorepo of standalone, independently deployable MCP servers"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = ["servers/*"]
+
+# 共享开发工具（PEP 735 dependency groups），运行时依赖在各 member 自己的 pyproject.toml 中
+[dependency-groups]
+dev = [
+    "pytest>=8.0,<9.0",
+    "pytest-asyncio>=0.24,<1.0",
+    "pytest-cov>=5.0,<6.0",
+    "httpx>=0.27,<1.0",
+    "ruff>=0.4,<1.0",
+    "mypy>=1.10,<2.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["servers/git-mcp-server/tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+lint.select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM"]
+lint.ignore = ["UP007"]  # 兼容 py3.11 的 X | None 语法
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
