@@ -9,7 +9,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from git_mcp_server.auth.sandbox import validate_repo_path
+from git_mcp_server.auth.sandbox import resolve_repo_ref
 from git_mcp_server.errors import AppError, ErrorCode
 from git_mcp_server.metrics import observe_request
 
@@ -44,5 +44,5 @@ def tool_guard(tool_name: str) -> Callable:
 
 
 def require_repo(repo_path: str) -> str:
-    """校验并解析仓库路径（沙箱 + realpath）。"""
-    return validate_repo_path(repo_path)
+    """校验并解析仓库定位：绝对路径（白名单）或项目名（root 名 / root 一级子目录名）。"""
+    return resolve_repo_ref(repo_path)

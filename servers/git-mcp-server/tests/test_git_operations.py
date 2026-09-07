@@ -138,3 +138,24 @@ def test_path_outside_roots_blocked(env, git_repo, monkeypatch):
     with pytest.raises(AppError) as exc:
         _build_log()(repo_path=str(outside))
     assert exc.value.code.name == "PERMISSION_DENIED"
+
+
+# ---------------------------------------------------------------- 项目名（resolve_repo_ref）全链
+def test_tool_accepts_child_project_name(container_repo):
+    """repo_path 用一级子目录名 → 工具全链命中。"""
+    out = _build_status()(repo_path="repo")
+    assert out["clean"] is True
+    assert out["branch"]["name"] == "main"
+
+
+def test_tool_accepts_root_basename(allowed_env):
+    """repo_path 用 allowed root 的 basename（root 本身即 git 仓库）。"""
+    out = _build_log()(repo_path="repo", max_count=10)  # git_repo basename = "repo"
+    assert out["count"] == 2
+
+
+def test_tool_accepts_project_from_second_root(two_roots):
+    """多 root：repo_path 用第二棵树的一级子目录名。"""
+    out = _build_status()(repo_path="beta")
+    assert out["clean"] is True
+    assert out["branch"]["name"] == "main"

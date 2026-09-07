@@ -9,6 +9,7 @@ AIOps 平台 MCP Servers 单仓（monorepo）——基于官方 `mcp` SDK（Pyth
 | Server | 说明 | 文档 |
 |--------|------|------|
 | [git-mcp-server](servers/git-mcp-server/README.md) | 只读访问 Git 仓库（status / log / show / branches / grep / blame） | [README](servers/git-mcp-server/README.md) |
+| [applog-mcp-server](servers/applog-mcp-server/README.md) | 声明式把多个 HTTP 日志查询接口注册成只读 MCP tool（config/tools.yaml） | [README](servers/applog-mcp-server/README.md) |
 
 > 更多 MCP server 后续按 `servers/<name>/` 目录添加。
 
@@ -21,10 +22,15 @@ aiops-mcp-servers/
 ├── docs/                      # 跨 server 设计文档
 ├── CHANGELOG.md
 └── servers/
-    └── git-mcp-server/        # 第一个 MCP server
-        ├── pyproject.toml     # 独立运行时依赖
-        ├── Dockerfile
-        ├── src/git_mcp_server/
+    ├── git-mcp-server/        # 只读 Git MCP server
+    │   ├── pyproject.toml     # 独立运行时依赖
+    │   ├── Dockerfile
+    │   ├── src/git_mcp_server/
+    │   └── tests/
+    └── applog-mcp-server/     # 声明式 HTTP 日志查询 MCP server
+        ├── pyproject.toml
+        ├── config/tools.yaml  # ★ 工具声明（HTTP 接口 → MCP tool）
+        ├── src/applog_mcp_server/
         └── tests/
 ```
 

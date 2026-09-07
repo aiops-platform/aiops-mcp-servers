@@ -36,7 +36,8 @@ def _build_fastmcp():
         "instructions": (
             "Read-only access to Git repositories. "
             "All operations are non-mutating (status, log, show, branches, grep, blame). "
-            "repo_path must be an absolute path within the allowed roots."
+            "repo_path accepts either an absolute path within GIT_ALLOWED_ROOTS "
+            "or a project name (an allowed root's basename or its direct child directory name)."
         ),
         # Origin/Host 校验由外层 SecurityMiddleware 统一实现（支持无端口 hostname）。
         # 关闭 FastMCP 内建 DNS rebinding 保护，避免双重校验与端口匹配歧义。

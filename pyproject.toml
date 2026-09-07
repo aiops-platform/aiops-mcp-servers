@@ -16,12 +16,14 @@ dev = [
     "httpx>=0.27,<1.0",
     "ruff>=0.4,<1.0",
     "mypy>=1.10,<2.0",
+    "types-PyYAML>=6.0,<7.0",  # mypy stubs：applog loader 解析 tools.yaml
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["servers/git-mcp-server/tests"]
-addopts = "-ra"
+testpaths = ["servers/git-mcp-server/tests", "servers/applog-mcp-server/tests"]
+# 多 server 的 tests/ 下存在同名模块（如 test_server.py），用 importlib 模式避免收集冲突
+addopts = "-ra --import-mode=importlib"
 
 [tool.ruff]
 line-length = 100

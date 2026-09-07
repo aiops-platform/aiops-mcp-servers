@@ -241,7 +241,7 @@ async def git_log(
     ...
 ```
 
-校验规则：`repo_path` 必填绝对路径；`max_count` 1–100、`max_lines` 1–5000；`file_path` 可选相对路径；rev 参数（target/commit）长度上限且**禁止以 `-` 开头**（防参数注入）。
+校验规则：`repo_path` 现支持**两种定位**（见 §7 项目名解析）——绝对路径（`GIT_ALLOWED_ROOTS` 白名单内）或**项目名**（某 allowed root 的 basename / 一级子目录名）；`max_count` 1–100、`max_lines` 1–5000；`file_path` 可选相对路径；rev 参数（target/commit）长度上限且**禁止以 `-` 开头**（防参数注入）。
 
 ### 5.7 可观测性（采纳评审意见）
 
@@ -293,7 +293,7 @@ async def git_log(
 | 2 | **原生认证** | FastMCP `token_verifier` + `AuthSettings`；默认 `StaticTokenVerifier`，生产可切 OAuth 2.1 / token introspection |
 | 3 | **Origin / Host 校验** | MCP 规范 MUST；无效 Origin → 403；Host 默认回环白名单 → 403（防 DNS rebinding） |
 | 4 | **生产强制认证** | `ENVIRONMENT=production` 下无认证 / 无白名单配置 → 拒绝启动 |
-| 5 | **路径沙箱** | `realpath()` + 白名单前缀匹配（`GIT_ALLOWED_ROOTS`）+ 禁止 `..` + **白名单未配置则拒绝所有（fail-closed）** |
+| 5 | **路径沙箱** | `realpath()` + 白名单前缀匹配（`GIT_ALLOWED_ROOTS`）+ 禁止 `..` + **白名单未配置则拒绝所有（fail-closed）**；`repo_path` 支持绝对路径或**项目名**（root 名 / root 一级子目录名），`~` 先 `expanduser` 再 `realpath` |
 | 6 | **只读 + 资源限制** | 仅只读子命令；subprocess `timeout`（默认 30s）；输出字节上限（1MB）；rev 参数禁止以 `-` 开头 |
 | 7 | **输入校验 + 限流** | `Annotated Field` 范围/长度校验；HTTP 层 Token Bucket 限流（可选） |
 
@@ -314,6 +314,11 @@ def validate_repo_path(repo_path: str) -> str:
     raise AppException(ErrorCode.PERMISSION_DENIED, f"Path '{repo_path}' is not in allowed roots")
 ```
 
+> 运行期入口实为 `sandbox.py::resolve_repo_ref(ref)`：形如路径的值（`/`、`~`、`./`、`../` 开头或含分隔符）→
+> `validate_repo_path`（上述白名单）；**裸项目名** → 两遍匹配（root basename → 一级子目录），解析结果 realpath
+> 后仍须落在白名单 root 内（防 symlink 越界），未命中 → `PERMISSION_DENIED`。roots 读取统一
+> `expanduser + realpath + 去重`（修复 `os.path.realpath` 不展开 `~` 的潜伏 bug）。多 root 逗号并列，同名冲突按列表顺序取先者。
+
 ---
 
 ## 8. 配置项（.env / 环境变量）
@@ -324,7 +329,7 @@ def validate_repo_path(repo_path: str) -> str:
 | `BIND_HOST` | `127.0.0.1` | 绑定地址 |
 | `BIND_PORT` | `8000` | 监听端口 |
 | `AUTH_TOKEN` | (空) | 静态 Bearer Token（`StaticTokenVerifier` 用）；production 下为空则拒绝启动 |
-| `GIT_ALLOWED_ROOTS` | (空) | Git 仓库根目录白名单（逗号分隔）；为空则**拒绝所有仓库** |
+| `GIT_ALLOWED_ROOTS` | (空) | Git 仓库根白名单（逗号分隔可多个 root）；为空则**拒绝所有仓库**。每个 root 的 basename 与其一级子目录名即为可查询的**项目名** |
 | `GIT_COMMAND_TIMEOUT_SEC` | `30` | 每条 git 命令超时（秒） |
 | `GIT_MAX_OUTPUT_BYTES` | `1048576` | 单次工具输出上限（字节，默认 1MB） |
 | `ALLOWED_ORIGINS` | (空) | Origin 白名单（逗号分隔）；为空则仅放行无 Origin 的请求（非浏览器客户端） |

@@ -39,28 +39,32 @@ def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess:
     )
 
 
+def _make_git_repo(path: Path) -> Path:
+    """在给定 path 构建带两个提交 + feature 分支的临时 git 仓库。"""
+    path.mkdir(parents=True)
+    _git("init", "-q", "-b", "main", ".", cwd=path)
+    _git("config", "user.email", "t@test.local", cwd=path)
+    _git("config", "user.name", "Tester", cwd=path)
+    (path / "a.txt").write_text("hello world\nsecond line\n")
+    (path / "sub").mkdir()
+    (path / "sub" / "b.txt").write_text("alpha\n")
+    _git("add", "-A", cwd=path)
+    _git("commit", "-qm", "first commit", cwd=path)
+    # second commit: 修改 a.txt（用于 blame/status/log 断言）
+    (path / "a.txt").write_text("hello world\nmodified line\n")
+    _git("add", "-A", cwd=path)
+    _git("commit", "-qm", "second commit", cwd=path)
+    _git("checkout", "-qb", "feature", cwd=path)
+    (path / "a.txt").write_text("hello world\nmodified line\nfeature change\n")
+    _git("commit", "-qam", "feature commit", cwd=path)
+    _git("checkout", "-q", "main", cwd=path)
+    return path
+
+
 @pytest.fixture
 def git_repo(tmp_path):
-    """构建带两个提交的临时 git 仓库。"""
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _git("init", "-q", "-b", "main", ".", cwd=repo)
-    _git("config", "user.email", "t@test.local", cwd=repo)
-    _git("config", "user.name", "Tester", cwd=repo)
-    (repo / "a.txt").write_text("hello world\nsecond line\n")
-    (repo / "sub").mkdir()
-    (repo / "sub" / "b.txt").write_text("alpha\n")
-    _git("add", "-A", cwd=repo)
-    _git("commit", "-qm", "first commit", cwd=repo)
-    # second commit: 修改 a.txt（用于 blame/status/log 断言）
-    (repo / "a.txt").write_text("hello world\nmodified line\n")
-    _git("add", "-A", cwd=repo)
-    _git("commit", "-qm", "second commit", cwd=repo)
-    _git("checkout", "-qb", "feature", cwd=repo)
-    (repo / "a.txt").write_text("hello world\nmodified line\nfeature change\n")
-    _git("commit", "-qam", "feature commit", cwd=repo)
-    _git("checkout", "-q", "main", cwd=repo)
-    return repo
+    """构建带两个提交的临时 git 仓库（目录名 "repo"）。"""
+    return _make_git_repo(tmp_path / "repo")
 
 
 @pytest.fixture
@@ -68,3 +72,24 @@ def allowed_env(env, git_repo, monkeypatch):
     """env + 允许仓库根指向临时 git 仓库。"""
     monkeypatch.setenv("GIT_ALLOWED_ROOTS", str(git_repo))
     yield git_repo
+
+
+@pytest.fixture
+def container_repo(env, tmp_path, monkeypatch):
+    """容器 root：git 仓库是其一级子目录（root/"repo"）。用于「项目名=一级子目录」解析测试。"""
+    root = tmp_path / "container"
+    root.mkdir()
+    _make_git_repo(root / "repo")
+    monkeypatch.setenv("GIT_ALLOWED_ROOTS", str(root))
+    yield root
+
+
+@pytest.fixture
+def two_roots(env, tmp_path, monkeypatch):
+    """两个 allowed root，模拟「zjb 独立仓库群 + monorepo」两棵树：root1/"alpha"、root2/"beta"。"""
+    root1 = tmp_path / "root1"
+    root2 = tmp_path / "root2"
+    _make_git_repo(root1 / "alpha")
+    _make_git_repo(root2 / "beta")
+    monkeypatch.setenv("GIT_ALLOWED_ROOTS", f"{root1},{root2}")
+    yield root1, root2

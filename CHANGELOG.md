@@ -4,6 +4,32 @@
 
 ## [Unreleased]
 
+### Added
+
+- **applog-mcp-server**（新增独立可部署 MCP Server）
+  - 声明式把多个 HTTP 日志查询接口注册成只读 MCP tool：`config/tools.yaml` 里一段 = 一个 tool，新增查询只改 YAML
+  - 基于官方 `mcp` SDK（FastMCP 1.x）的 Streamable HTTP 服务，`json_response` 模式，入参由声明生成（必填/可选真实校验）
+  - 支持 GET(query 参数) / POST(query + JSON body)；工具统一标注 `readOnlyHint`；`/health` 存活探针
+  - 入参支持 `in: path` 动态路径模板（如 `/api/sip-aiops/app-log/chain/{requestId}`，须必填、值 URL 转义）；默认 `config/tools.yaml` 含 `query_chain_log_by_request_id` 示例
+  - 上游调用：流式读取 + 字节上限截流（内存有界、码点边界安全截断）、显式超时、`follow_redirects`、非 2xx/超时归一为结构化失败
+  - 可选原生 Bearer 认证（`AUTH_TOKEN`，fail-closed）：production 强制要求（`create_mcp_server`/`build_app` 亦校验）
+  - 服务端执行日志：成功 debug / 失败与认证拒绝 warning（含 method/url/status/耗时），便于运维观测
+  - fail-closed 配置校验：tools.yaml 非法/工具名与入参名非合法标识符或 Python 保留字/名字重复/`in:body` 配 GET/path 含 query/base_url 非 http(s) → 拒绝启动并报中文错误
+  - 测试：5 个测试文件（34 个用例）覆盖 loader 校验、HTTP 透传/4xx/超时/截断/重定向/码点边界、ASGI 端到端（/health、认证、tools/list、tools/call）
+
+### Changed
+
+- **git-mcp-server**：`repo_path` 支持「项目名」定位，免绝对路径
+  - 新增 `resolve_repo_ref`：`repo_path` 可传绝对路径（`GIT_ALLOWED_ROOTS` 内，`~` 自动展开）或**项目名**
+    （某 allowed root 的 basename / 一级子目录名）；裸名两遍匹配（root 名 → 一级子目录），解析结果 realpath
+    后仍须落在白名单 root 内（防 symlink 越界），未命中返回 `PERMISSION_DENIED`（中文报错列出可用名）
+  - 修复 `os.path.realpath` 不展开 `~` 的潜伏 bug（roots 与输入统一 `expanduser + realpath`）
+  - `.env` / `.env.example`：`GIT_ALLOWED_ROOTS` 默认并列 `acc-aiops-platform-zjb` + `acc-aiops-platform`
+    两棵树（多 root 逗号分隔，同名冲突按列表顺序取先者）
+  - 工具 schema 与 server instructions 同步说明两态定位语义
+  - 测试：`conftest` 抽 `_make_git_repo` 并新增 `container_repo` / `two_roots` fixture；sandbox 增 7 用例
+    （root 名 / 子目录名 / 第二棵树 / 未知名 / `~` 展开 / symlink 越界），git operations 增 3 个 name e2e
+
 ## [0.1.0] - 2026-09-02
 
 ### Added

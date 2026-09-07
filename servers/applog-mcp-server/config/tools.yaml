@@ -1,0 +1,60 @@
+# applog-mcp-server 工具声明文件：一个 HTTP 日志查询接口 = 一个 MCP tool。
+#
+# 约定：
+# - inputs.name = MCP 工具入参名；required=true 为必填（FastMCP 会真实校验）
+# - inputs.in: path -> 替换进 http.path 占位符 {name}（须 required，如 /chain/{requestId}）
+# - inputs.in: query -> 放到 URL query string；body -> 放进 JSON body（method=POST 时用）
+# - http.base_url 缺省时回落到 env APPLOG_DEFAULT_BASE_URL
+# - 凭据不要写在这里（v1 上游无鉴权；后续 header 鉴权走 env）
+# 启动期 fail-closed：YAML 非法 / 工具名重复 / 未知字段 / 占位符缺失 -> 拒绝启动并报中文错误。
+tools:
+  - name: query_app_logs
+    description: >-
+      按时间范围 + 日志级别 + 服务名查询 sip-aiops 应用日志（HTTP 日志 API）。
+      startTime/endTime 为 ISO8601 时间，含边界，例 2026-08-28T03:14:41。
+      logLevel 取值如 ERROR/INFO/WARN/DEBUG；serviceName 例 sip-aiops-management。
+    http:
+      method: GET
+      path: /api/sip-aiops/app-log
+      base_url: http://localhost:8080     # 缺省时回落到 env APPLOG_DEFAULT_BASE_URL
+    inputs:
+      - name: startTime
+        type: string
+        in: query
+        required: true
+        description: 开始时间（ISO8601，含边界），如 2026-08-28T03:14:41
+      - name: endTime
+        type: string
+        in: query
+        required: true
+        description: 结束时间（ISO8601，含边界），如 2026-08-28T10:30:00
+      - name: logLevel
+        type: string
+        in: query
+        required: false
+        description: 日志级别过滤，如 ERROR / INFO / WARN / DEBUG
+      - name: serviceName
+        type: string
+        in: query
+        required: false
+        description: 服务/应用名过滤，如 sip-aiops-management
+    response:
+      mode: passthrough     # v1 通用透传：整段返回上游 JSON，不假设字段；超限截断并标注
+
+  - name: query_chain_log_by_request_id
+    description: >-
+      按 requestId（链路 ID）查询整条调用链的应用日志（HTTP 日志 API）。
+      requestId 进路径 /chain/{requestId}；startTime/endTime 为 ISO8601 时间（含边界），
+      例 2026-08-28T03:14:41，用于收窄时间范围；logLevel/serviceName 为可选过滤。
+    http:
+      method: GET
+      path: /api/sip-aiops/app-log/chain/{requestId}
+      base_url: http://localhost:8080     # 缺省时回落到 env APPLOG_DEFAULT_BASE_URL
+    inputs:
+      - name: requestId
+        type: string
+        in: path
+        required: true
+        description: 链路 ID（requestId），如 f920ac26e3fe4c5591a7fa2e106cf37c
+    response:
+      mode: passthrough     # v1 通用透传：整段返回上游 JSON，不假设字段；超限截断并标注

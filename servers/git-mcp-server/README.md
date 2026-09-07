@@ -122,6 +122,19 @@ INFO:     git_mcp_server.security: request trace_id=e9f8a7b6c5d4e3f2 method=POST
 
 所有路径/提交参数均经 `--end-of-options` / `--` 处理，防止选项注入；输出使用 porcelain/NUL 机器可读格式解析，避免文本解析脆弱性。
 
+### `repo_path` 定位：绝对路径 或 项目名
+
+每个工具的首参 `repo_path` 接受两种值：
+
+1. **绝对路径**：须在 `GIT_ALLOWED_ROOTS` 白名单内（`~` 会自动展开）。
+2. **项目名**：某 allowed root 的 **basename** 或其**一级子目录名**（如多 root 下的 `multi-agent-workflow`、
+   `sip-aiops-management`）——免绝对路径，LLM 直接按项目名请求即可。同名冲突按 `GIT_ALLOWED_ROOTS`
+   列表顺序取先者；未命中 → `PERMISSION_DENIED`（中文报错并列出可用名）。
+
+> git 边界由目录自身 .git 决定：独立仓库子目录（如 zjb 下的 multi-agent-workflow）→ 命令精确落在该项目；
+> monorepo 子目录（如 acc-aiops-platform 下的 sip-*，无独立 .git）→ git 向上落到整个 monorepo 根仓库
+> （status/grep 为整个仓库范围，log 隐式限子目录）。解析到非 git 目录会干净地报错。
+
 ## 配置项
 
 | 环境变量 | 默认值 | 说明 |
@@ -129,7 +142,7 @@ INFO:     git_mcp_server.security: request trace_id=e9f8a7b6c5d4e3f2 method=POST
 | `ENVIRONMENT` | `development` | `production` 强制要求认证与仓库白名单 |
 | `BIND_HOST` / `BIND_PORT` | `127.0.0.1` / `8000` | 监听地址 |
 | `AUTH_TOKEN` | 空 | Bearer Token；生产必填，否则拒绝启动 |
-| `GIT_ALLOWED_ROOTS` | 空 | 仓库路径白名单（逗号分隔）；为空 fail-closed 拒绝所有仓库 |
+| `GIT_ALLOWED_ROOTS` | 空 | 仓库根白名单（逗号分隔可多个 root）；为空 fail-closed 拒绝所有仓库。每个 root 的 basename 与其一级子目录名即为可查询的**项目名** |
 | `GIT_COMMAND_TIMEOUT_SEC` | `30.0` | git 命令超时（秒） |
 | `GIT_MAX_OUTPUT_BYTES` | `1048576` | 单命令输出上限（1MB） |
 | `ALLOWED_ORIGINS` | 空 | Origin 白名单；为空仅放行无 Origin 请求（防 DNS rebinding） |
@@ -178,7 +191,7 @@ async def main():
             tools = await session.list_tools()
             result = await session.call_tool(
                 "get_commit_log",
-                {"repo_path": "/srv/repos/my-repo", "max_count": 5},
+                {"repo_path": "multi-agent-workflow", "max_count": 5},  # 或绝对路径 /srv/repos/my-repo
             )
 
 
@@ -227,7 +240,7 @@ docker run --rm -p 8000:8000 \
 |------|------|------|
 | 网络 | `SecurityMiddleware` | Host/Origin 白名单校验，仅对 `/mcp` 生效；`/health`、`/metrics` 公开 |
 | 认证 | FastMCP `token_verifier` | 配置 `AUTH_TOKEN` 后 `/mcp` 强制 Bearer 校验（fail-closed） |
-| 路径沙箱 | `auth/sandbox.py` | 仓库路径白名单 + `realpath` 解析 symlink，越界返回 `PERMISSION_DENIED` |
+| 路径沙箱 | `auth/sandbox.py` | 仓库路径白名单（`resolve_repo_ref`：绝对路径 或 项目名）+ `expanduser + realpath` 解析 symlink，越界/未命中返回 `PERMISSION_DENIED` |
 | 资源限制 | `GitExecutor` | 显式超时（默认 30s）+ 输出字节上限（1MB）+ 安全 env（`GIT_TERMINAL_PROMPT=0` 等） |
 | 输入校验 | pydantic `Field` | 参数范围/长度约束；git 子进程使用 list 参数，杜绝 shell 注入 |
 | 限流 | `RateLimitMiddleware` | TokenBucket，超限返回 429 + `Retry-After`（默认关闭） |

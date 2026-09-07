@@ -19,7 +19,14 @@ _MAX_BLAME_LINES = 500
 
 StatusType = Annotated[
     str,
-    Field(description="Absolute path to the git repository (must be in GIT_ALLOWED_ROOTS)"),
+    Field(
+        description=(
+            "Git 仓库定位：绝对路径（须在 GIT_ALLOWED_ROOTS 内）或项目名"
+            "（某 allowed root 的 basename 或其一级子目录名，如 multi-agent-workflow）。"
+            "Absolute path within GIT_ALLOWED_ROOTS, or a project name "
+            "(an allowed root's basename or its direct child directory name)."
+        )
+    ),
 ]
 
 _STATUS_TEXT = {
