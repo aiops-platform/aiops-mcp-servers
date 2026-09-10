@@ -6,6 +6,26 @@
 
 ### Added
 
+- **aiops-datasource-mcp-server**（新增独立可部署 MCP Server）
+  - **领域型**只读工具：`query_logs` / `get_trace` / `query_metrics` / `check_infra` / `describe_pod`
+    ——调用方传领域语义（`metric=cpu_percent`），**不传 PromQL 表达式**；语义映射住在 server 侧
+  - **查询必须指定时间区间与目标**：三个带时间的工具 `start_time`/`end_time` 为必填，
+    fail-closed 校验（ISO8601 格式 / start<end / 跨度上限 `DATASOURCE_MAX_RANGE_HOURS`），
+    响应回显解析后的 `window`；**不提供无窗口的全量查询**
+  - **未知 metric 直接报错并列出可用项，不做静默兜底**；不提供 `promql:`/`cadvisor:` 透传
+    （设计动机：曾因白名单命名错配致五个指标返回同一数字，agent 据此误判"CPU 空闲"）
+  - **无数据 ≠ 0**：容器未设 limit 时百分比无定义，返回 `null` + 归因提示，
+    而非把 `+Inf`/`NaN` 当真实数字（会被 agent 读成"内存爆了"）
+  - 上游调用：流式按字节截断（码点边界安全 + **显式截断后缀**）、显式超时、
+    `follow_redirects`、非 2xx/超时归一为结构化结果；`query_metrics` 用 `query_range`（有窗口）
+  - kubectl 封装：命令白名单（只 get/describe）、`create_subprocess_exec` 非 shell、
+    namespace/pod 字符校验；kubectl 缺失归一为 `CONFIG_ERROR`
+  - 可选原生 Bearer 认证（`AUTH_TOKEN`，production 强制）；`/health` 存活探针
+  - 配置：共享变量不前缀，领域变量统一 `DATASOURCE_*`（对齐 applog 的 `APPLOG_`）；端口 `8300`
+  - 测试：6 个文件 46 用例（PromQL 映射互异/未知报错/除零守卫、时间区间四种非法形态、
+    ES 查询体与 trace 重建、kubectl 注入防护、工具 schema 必填校验、ASGI 端到端含错误路径）；
+    上游一律 `httpx.MockTransport` 不触网
+
 - **applog-mcp-server**（新增独立可部署 MCP Server）
   - 声明式把多个 HTTP 日志查询接口注册成只读 MCP tool：`config/tools.yaml` 里一段 = 一个 tool，新增查询只改 YAML
   - 基于官方 `mcp` SDK（FastMCP 1.x）的 Streamable HTTP 服务，`json_response` 模式，入参由声明生成（必填/可选真实校验）

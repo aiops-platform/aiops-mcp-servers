@@ -10,8 +10,15 @@ AIOps 平台 MCP Servers 单仓（monorepo）——基于官方 `mcp` SDK（Pyth
 |--------|------|------|
 | [git-mcp-server](servers/git-mcp-server/README.md) | 只读访问 Git 仓库（status / log / show / branches / grep / blame） | [README](servers/git-mcp-server/README.md) |
 | [applog-mcp-server](servers/applog-mcp-server/README.md) | 声明式把多个 HTTP 日志查询接口注册成只读 MCP tool（config/tools.yaml） | [README](servers/applog-mcp-server/README.md) |
+| [aiops-datasource-mcp-server](servers/aiops-datasource-mcp-server/README.md) | 领域型数据源查询：ES 日志 / Prometheus 指标 / K8s 状态；**查询必须带时间区间与目标** | [README](servers/aiops-datasource-mcp-server/README.md) |
 
 > 更多 MCP server 后续按 `servers/<name>/` 目录添加。
+>
+> **两种工具取向**：`applog` 是**声明式透传**（上游接口即契约）；`aiops-datasource`
+> 是**领域型语义**（映射内建，调用方传 `metric=cpu_percent` 而非 PromQL）。
+> 指标/日志的"正确查询方式"属领域知识，透传给 LLM 现场编写会引入语义错配——
+> 详见 [aiops-datasource README](servers/aiops-datasource-mcp-server/README.md) 与
+> `multi-agent-workflow/backend/docs/design-v5.5.md`。
 
 ## 目录结构
 
