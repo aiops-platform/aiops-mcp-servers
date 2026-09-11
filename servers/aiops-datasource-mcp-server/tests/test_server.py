@@ -57,12 +57,13 @@ def test_health(env) -> None:
         assert r.json()["service"] == "aiops-datasource-mcp-server"
 
 
-def test_tools_list_exposes_all_five_read_only(env) -> None:
+def test_tools_list_exposes_all_read_only(env) -> None:
     with _client(env) as c:
         tools = _list_tools(c, _init(c))
     names = {t["name"] for t in tools}
     assert names == {
-        "query_logs", "get_trace", "query_metrics", "check_infra", "describe_pod"
+        "query_logs", "get_trace", "query_metrics", "check_infra", "describe_pod",
+        "get_service_topology", "locate_repo",
     }
     # 只读注解：agent 侧（AgentScope）据此自动 ALLOW
     assert all(t["annotations"]["readOnlyHint"] is True for t in tools)

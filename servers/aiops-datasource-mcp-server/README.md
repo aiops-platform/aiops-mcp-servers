@@ -38,6 +38,12 @@ Prometheus 指标、Kubernetes 状态暴露为**领域型只读工具**。
 | `query_metrics` | **必填**（+`step_seconds`） | `service`、`metric`（5 选 1） | Prometheus `query_range` |
 | `check_infra` | 无（当前状态） | `namespace`、`pod`(可空=列全部) | `kubectl get pods` |
 | `describe_pod` | 无（当前状态） | `namespace`、`pod`(必填) | `kubectl describe pod` |
+| `get_service_topology` | 无（静态目录） | `service`(必填)、`hops`(默认 2) | 内置 CMDB 目录 + 依赖图 |
+| `locate_repo` | 无（静态目录） | `service`(必填) | 内置 CMDB 目录 |
+
+> **CMDB / 拓扑**（后两个）查的是**静态服务目录**（谁调谁、归属哪个团队/仓库），
+> 不是运行时观测数据。当前数据为 **mock**（10 个服务的内置目录），但**接口是生产形态**——
+> 换真实 CMDB 只需替换 `backends/cmdb.py` 的取数实现，工具面与返回契约不变。
 
 `metric` 可用值（**领域语义，非 PromQL**）：`cpu_percent` / `memory_percent` /
 `disk_percent` / `error_rate` / `p95_latency_ms`。
@@ -76,6 +82,9 @@ uv run python -m aiops_datasource_mcp_server     # 默认 http://127.0.0.1:8300
 | `DATASOURCE_K8S_NAMESPACE` | `order` | `check_infra`/`describe_pod` 默认 namespace |
 | `DATASOURCE_KUBECTL_BIN` | `kubectl` | kubectl 二进制 |
 | `DATASOURCE_KUBECONFIG` | (空) | kubeconfig 路径；空 = kubectl 默认 |
+| `DATASOURCE_REPO_ORG` | `acme-aiops` | 未配本地 root 时 `locate_repo` 返回的远端仓库组织 |
+| `DATASOURCE_REPO_ROOT` | (空) | 本地仓库根目录；**非空**时 `locate_repo` 返回 `file://{root}/{repo}`（testbed 联调）；**无默认个人路径** |
+| `DATASOURCE_TOPOLOGY_DEFAULT_HOPS` | `2` | `get_service_topology` 默认跳数 |
 | `DATASOURCE_REQUEST_TIMEOUT_SEC` | `30.0` | 单次上游请求超时 |
 | `DATASOURCE_MAX_RESPONSE_BYTES` | `1048576` | 单次返回字节上限（超出流式截断并标注） |
 | `DATASOURCE_MAX_RANGE_HOURS` | `24` | 单次查询最大时间跨度（防全量扫描） |
@@ -124,5 +133,6 @@ uv run mypy servers/aiops-datasource-mcp-server/src/aiops_datasource_mcp_server
 
 覆盖：PromQL 映射（5 键互不相同 / 未知 metric 报错 / 除零守卫）、时间区间
 （非法格式 / start≥end / 超上限）、ES 查询体构造、kubectl 归一与注入防护、
-工具 schema（`required` 含 `start_time`/`end_time`）、ASGI 端到端（含错误路径）。
+**CMDB 拓扑**（方向相对起点、跳数限制、未知服务不报错、边方向、目录字段）、
+**repo 定位**（远端默认 / 本地 root 覆盖 / 未收录）、工具 schema、ASGI 端到端。
 上游一律用 `httpx.MockTransport`，**不触网**。

@@ -17,7 +17,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from aiops_datasource_mcp_server.backends import es, k8s
+from aiops_datasource_mcp_server.backends import cmdb, es, k8s
 from aiops_datasource_mcp_server.backends import prometheus as prom
 from aiops_datasource_mcp_server.config import get_settings
 from aiops_datasource_mcp_server.errors import AppError, ErrorCode
@@ -55,6 +55,13 @@ _METRIC_DESC = (
     "指标名（**领域语义，不是 PromQL 表达式**）。可用："
     + ", ".join(prom.available_metrics())
     + "。传其它值会直接报错并列出可用项——本 server 不做静默兜底。"
+)
+
+# 同理：默认跳数与其描述也必须是**模块级**（闭包变量在 get_type_hints 里解析不到，
+# 会报 InvalidSignature）
+_TOPOLOGY_DEFAULT_HOPS = get_settings().datasource_topology_default_hops
+_TOPOLOGY_HOPS_DESC = (
+    f"查询跳数（上游/下游各展开几层），默认 {_TOPOLOGY_DEFAULT_HOPS}"
 )
 
 
@@ -190,6 +197,39 @@ def _build_check_infra():
     return check_infra
 
 
+def _build_get_service_topology():
+    async def get_service_topology(
+        service: ServiceType,
+        hops: Annotated[
+            int, Field(ge=0, le=6, description=_TOPOLOGY_HOPS_DESC)
+        ] = _TOPOLOGY_DEFAULT_HOPS,
+    ) -> dict:
+        """查服务的依赖拓扑：N 跳内的关联服务（**静态目录，非运行时观测**）。
+
+        诊断上最常用的两个用途：
+        - `upstream`（谁调用我）→ **爆炸半径**：这个服务挂了还会影响谁
+        - `downstream`（我调用谁）→ **可能的上游根因**：我的问题是不是下游拖的
+
+        返回每个关联服务的 `distance`（跳数）、`direction`（upstream/downstream/both）、
+        以及目录信息（owner / tier / namespace / tech / criticality）。
+        """
+        return await cmdb.get_service_topology(service, hops)
+
+    return get_service_topology
+
+
+def _build_locate_repo():
+    async def locate_repo(service: ServiceType) -> dict:
+        """由服务名定位代码仓库（service → repo URL + owner/tier/namespace）。
+
+        用于"症状发生在哪个服务 → 该去看哪个仓库的代码"。返回 `found=false` 表示
+        CMDB 未收录该服务（**不要据此编造仓库**），并附可用服务名清单。
+        """
+        return await cmdb.locate_repo(service)
+
+    return locate_repo
+
+
 def _build_describe_pod():
     async def describe_pod(
         pod: Annotated[str, Field(description="Pod 名（完整名，含 deployment hash 与随机后缀）")],
@@ -205,6 +245,8 @@ def _build_describe_pod():
 
 FACTORIES = {
     "query_logs": _build_query_logs,
+    "get_service_topology": _build_get_service_topology,
+    "locate_repo": _build_locate_repo,
     "get_trace": _build_get_trace,
     "query_metrics": _build_query_metrics,
     "check_infra": _build_check_infra,

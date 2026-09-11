@@ -40,6 +40,18 @@ class Settings(BaseSettings):
     # kubeconfig 路径；空 = 用 kubectl 自身默认（~/.kube/config 或 in-cluster）
     datasource_kubeconfig: str = ""
 
+    # --- CMDB / 仓库定位 ---
+    # 仓库远端根（`locate_repo` 在未配本地 root 时返回
+    # `https://github.com/{org}/{repo}`）
+    datasource_repo_org: str = "acme-aiops"
+    # 本地仓库根目录（testbed 联调）：**非空**时 `locate_repo` 返回
+    # `file://{root}/{repo}` 而非远端 URL；空 = 走远端。
+    # 例：/path/to/agentflow-testbed/services
+    # 注意：这里没有默认的个人绝对路径——本机路径由各环境自己的 .env 提供。
+    datasource_repo_root: str = ""
+    # `get_service_topology` 默认跳数（调用方仍可显式覆盖）
+    datasource_topology_default_hops: int = Field(default=2, ge=0, le=6)
+
     # --- 请求与配额 ---
     # 单次上游请求超时（秒）
     datasource_request_timeout_sec: float = Field(default=30.0, gt=0)

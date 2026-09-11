@@ -22,6 +22,12 @@
     namespace/pod 字符校验；kubectl 缺失归一为 `CONFIG_ERROR`
   - 可选原生 Bearer 认证（`AUTH_TOKEN`，production 强制）；`/health` 存活探针
   - 配置：共享变量不前缀，领域变量统一 `DATASOURCE_*`（对齐 applog 的 `APPLOG_`）；端口 `8300`
+  - **CMDB / 拓扑**（新增）：`get_service_topology(service, hops=2)` 查 N 跳依赖拓扑
+    （**方向相对起点**——上游=爆炸半径、下游=可能的上游根因）；`locate_repo(service)`
+    由服务名定位仓库。数据为内置 mock（10 个服务目录 + 依赖图），**接口是生产形态**：
+    换真实 CMDB 只需替换 `backends/cmdb.py` 取数实现
+  - `DATASOURCE_REPO_ROOT`：本地仓库根（testbed 用 file://）；**不设默认个人路径**，
+    留空走 `https://github.com/{DATASOURCE_REPO_ORG}/{repo}`
   - 测试：6 个文件 46 用例（PromQL 映射互异/未知报错/除零守卫、时间区间四种非法形态、
     ES 查询体与 trace 重建、kubectl 注入防护、工具 schema 必填校验、ASGI 端到端含错误路径）；
     上游一律 `httpx.MockTransport` 不触网

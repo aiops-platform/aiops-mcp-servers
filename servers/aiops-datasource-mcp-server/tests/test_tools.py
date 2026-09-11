@@ -9,9 +9,10 @@ from aiops_datasource_mcp_server.tools.datasource import (
 )
 
 
-def test_all_five_tools_registered() -> None:
+def test_all_tools_registered() -> None:
     assert set(FACTORIES) == {
-        "query_logs", "get_trace", "query_metrics", "check_infra", "describe_pod"
+        "query_logs", "get_trace", "query_metrics", "check_infra", "describe_pod",
+        "get_service_topology", "locate_repo",
     }
 
 
