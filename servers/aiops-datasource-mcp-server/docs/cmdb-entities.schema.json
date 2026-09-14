@@ -1,0 +1,374 @@
+{
+  "$defs": {
+    "DerivedMetricSpec": {
+      "additionalProperties": false,
+      "description": "**派生**指标——只声明，**没有任何实例化槽位**。\n\n故意不带 ``values`` 之类的字段：派生指标随时间窗口变化（见 ``window_months``），\n写进静态文件就会变成会漂移的存储态。查询时现算（``graph_query.facets``）。",
+      "properties": {
+        "computed_by": {
+          "title": "Computed By",
+          "type": "string"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "source": {
+          "title": "Source",
+          "type": "string"
+        },
+        "window_months": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Window Months"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "window_months",
+        "source",
+        "computed_by"
+      ],
+      "title": "DerivedMetricSpec",
+      "type": "object"
+    },
+    "Edge": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": true,
+          "title": "Attributes",
+          "type": "object"
+        },
+        "from": {
+          "title": "From",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "to": {
+          "title": "To",
+          "type": "string"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "from",
+        "to"
+      ],
+      "title": "Edge",
+      "type": "object"
+    },
+    "EdgeTypeSpec": {
+      "additionalProperties": false,
+      "description": "边类型的声明。**方向性与端点类型在这里声明一次**，不在每条边上重复。",
+      "properties": {
+        "attributes": {
+          "additionalProperties": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "title": "Attributes",
+          "type": "object"
+        },
+        "directed": {
+          "title": "Directed",
+          "type": "boolean"
+        },
+        "from_types": {
+          "items": {
+            "type": "string"
+          },
+          "title": "From Types",
+          "type": "array"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "label_zh": {
+          "title": "Label Zh",
+          "type": "string"
+        },
+        "origin": {
+          "enum": [
+            "reference",
+            "local"
+          ],
+          "title": "Origin",
+          "type": "string"
+        },
+        "to_types": {
+          "items": {
+            "type": "string"
+          },
+          "title": "To Types",
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "label_zh",
+        "directed",
+        "from_types",
+        "to_types",
+        "origin"
+      ],
+      "title": "EdgeTypeSpec",
+      "type": "object"
+    },
+    "KeyAttributeSpec": {
+      "additionalProperties": false,
+      "description": "**静态**横切标签（人工声明的分类）。派生指标见 ``DerivedMetricSpec``。",
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "label_zh": {
+          "title": "Label Zh",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "label_zh"
+      ],
+      "title": "KeyAttributeSpec",
+      "type": "object"
+    },
+    "Metadata": {
+      "additionalProperties": false,
+      "properties": {
+        "derived_rules": {
+          "additionalProperties": true,
+          "title": "Derived Rules",
+          "type": "object"
+        },
+        "source": {
+          "default": "",
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "title": "Metadata",
+      "type": "object"
+    },
+    "Node": {
+      "additionalProperties": false,
+      "properties": {
+        "attributes": {
+          "additionalProperties": true,
+          "title": "Attributes",
+          "type": "object"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        },
+        "refs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Refs",
+          "type": "object"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tags",
+          "type": "array"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "name"
+      ],
+      "title": "Node",
+      "type": "object"
+    },
+    "NodeTypeSpec": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "label_zh": {
+          "title": "Label Zh",
+          "type": "string"
+        },
+        "view": {
+          "enum": [
+            "business",
+            "application",
+            "organization",
+            "engineering",
+            "operations"
+          ],
+          "title": "View",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "label",
+        "label_zh",
+        "view"
+      ],
+      "title": "NodeTypeSpec",
+      "type": "object"
+    },
+    "Ontology": {
+      "additionalProperties": false,
+      "properties": {
+        "derived_metrics": {
+          "items": {
+            "$ref": "#/$defs/DerivedMetricSpec"
+          },
+          "title": "Derived Metrics",
+          "type": "array"
+        },
+        "edge_types": {
+          "items": {
+            "$ref": "#/$defs/EdgeTypeSpec"
+          },
+          "title": "Edge Types",
+          "type": "array"
+        },
+        "key_attributes": {
+          "items": {
+            "$ref": "#/$defs/KeyAttributeSpec"
+          },
+          "title": "Key Attributes",
+          "type": "array"
+        },
+        "node_types": {
+          "items": {
+            "$ref": "#/$defs/NodeTypeSpec"
+          },
+          "title": "Node Types",
+          "type": "array"
+        }
+      },
+      "required": [
+        "node_types",
+        "edge_types",
+        "key_attributes",
+        "derived_metrics"
+      ],
+      "title": "Ontology",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "edges": {
+      "items": {
+        "$ref": "#/$defs/Edge"
+      },
+      "title": "Edges",
+      "type": "array"
+    },
+    "metadata": {
+      "$ref": "#/$defs/Metadata"
+    },
+    "nodes": {
+      "additionalProperties": {
+        "items": {
+          "$ref": "#/$defs/Node"
+        },
+        "type": "array"
+      },
+      "title": "Nodes",
+      "type": "object"
+    },
+    "ontology": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ontology"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "schema_version": {
+      "title": "Schema Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version"
+  ],
+  "title": "EntityDocument",
+  "type": "object"
+}

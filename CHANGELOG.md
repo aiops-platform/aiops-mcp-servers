@@ -43,8 +43,46 @@
   - fail-closed 配置校验：tools.yaml 非法/工具名与入参名非合法标识符或 Python 保留字/名字重复/`in:body` 配 GET/path 含 query/base_url 非 http(s) → 拒绝启动并报中文错误
   - 测试：5 个测试文件（34 个用例）覆盖 loader 校验、HTTP 透传/4xx/超时/截断/重定向/码点边界、ASGI 端到端（/health、认证、tools/list、tools/call）
 
+- **aiops-datasource-mcp-server**：CMDB 实体图谱化（**12 类节点 / 11 类边 / 4 个筛选维度**）
+  - **`cmdb-entities.json` 成为 CMDB 的唯一载体**：JSON 实体文件承载服务目录、依赖拓扑、
+    业务域归属；换数据只改文件，不改代码不发版。随包分发（`data/`，与 cwd 无关），
+    生产用 `DATASOURCE_CMDB_PATH` 指向挂载卷
+  - **ontology 由文件声明**：12 类节点（enterprise / journey / portfolio / cross_journey_hub /
+    app / team / agent / tool / codebase / wiki / incident / change，未录入的类型写成显式 `[]`）、
+    11 类边（参考 ontology 的 10 类 + **本地新增 `calls`**——参考图没有服务调用边，
+    它的 storm fan-out 是故障扇出不是依赖）、**静态标签与派生指标强制分离**（带时间窗口的
+    Top 10 指标由**校验器**硬拒写入 `tags`，不靠文档约定）
+  - 新增工具 **`query_entity_graph`**（NODE TYPE / PORTFOLIO / KEY ATTRIBUTES / EDGE TYPE
+    四维筛选 + 聚焦展开；facets 与计数**每次现算不存储**；未知取值 fail-closed 并区分
+    「拼错」与「没数据」）与 **`infer_candidate_services`**（问题 → 候选应用：症状服务 →
+    依赖拓扑扩展 → 问题文本子串匹配；每个候选带**非空的 reasons**；
+    `confidence`（证据强度）与 `impact`（影响面）是**两个独立的轴**，不让"重要"冒充"可能"；
+    **不给浮点分**——那会暗示一个不存在的校准模型）
+  - **事件覆盖层**（`DATASOURCE_INCIDENTS_PATH`，可选）：Incident / Change 走独立只读文件，
+    与主图合并后「问题 → 事件 → 应用」这条路径自动生效，**数据到位那天不需要改代码**。
+    与主文件的 fail-closed **刻意相反**——主文件缺失是配置错误（返回空图会把"文件没挂上"
+    洗成"这服务没依赖"），事件文件缺失只是还没数据
+  - 热重载：`get_graph()` 每次调用 `stat()`，以 `(路径, mtime)` 作缓存键——改完文件
+    **下次查询即生效，无需重启**（为将来的 CMDB 构建界面预留）
+  - 配套 `docs/cmdb-entities.md`（schema 参考 + 校验规则 + 版本规则 + 已知失真点）与
+    生成的 `docs/cmdb-entities.schema.json`（给界面用；漂移由测试守住）
+  - 测试：**6 个新文件 86 个用例**——黄金迁移测试（把迁移前的 `_SERVICES` /
+    `_DEPENDS_ON` 字面量冻成期望值逐字段比对）、加载器失败矩阵（缺文件 / 坏 JSON /
+    主版本不符 / 缺类型键 / 派生标签 / 悬空引用 / 端点类型不符…）、四维筛选与
+    fail-closed 文案、候选推断（reasons 非空 / 两轴分离 / 诚实空结果）、
+    事件覆盖层（未配置不是错误 / 合并只增不改 / 事件路径真能落到 App）、schema 漂移
+
 ### Changed
 
+- **aiops-datasource-mcp-server**：`backends/cmdb.py` 的数据源由模块内字面量改为实体图谱文件
+  - 删除 `_SERVICES` / `_DEPENDS_ON`（10 服务 / 13 条边），改读
+    `EntityGraph` 上**同形的派生索引**（`services` / `depends_on` / `repo_by_app`）；
+    `_info` / `_bfs` / `_repo_url` 等函数体不变
+  - **对外契约零改动**：`get_service_topology` / `locate_repo` 的入参、返回键与语义
+    完全不变——改动前后输出**逐字节相同**（默认与 `DATASOURCE_REPO_ROOT` 两种模式均验证）；
+    `tests/test_cmdb_backend.py` **零改动通过**（迁移的验收标准）
+  - 新增配置 `DATASOURCE_CMDB_PATH` / `DATASOURCE_INCIDENTS_PATH`
+  - 工具数 7 → 9（`tests/test_tools.py` / `tests/test_server.py` 的工具集断言同步更新）
 - **git-mcp-server**：`repo_path` 支持「项目名」定位，免绝对路径
   - 新增 `resolve_repo_ref`：`repo_path` 可传绝对路径（`GIT_ALLOWED_ROOTS` 内，`~` 自动展开）或**项目名**
     （某 allowed root 的 basename / 一级子目录名）；裸名两遍匹配（root 名 → 一级子目录），解析结果 realpath

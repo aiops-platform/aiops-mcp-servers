@@ -51,6 +51,16 @@ class Settings(BaseSettings):
     datasource_repo_root: str = ""
     # `get_service_topology` 默认跳数（调用方仍可显式覆盖）
     datasource_topology_default_hops: int = Field(default=2, ge=0, le=6)
+    # CMDB 实体图谱文件（**CMDB 的唯一载体**）。**空 = 用包内自带的
+    # `data/cmdb-entities.json`**——包内路径与 cwd 无关，随 wheel 分发。
+    # 生产/多租户请指向挂载卷上可授权编辑的文件。
+    # 该文件缺失是**配置错误**：CMDB 工具会 fail-closed 报错（不给空图，
+    # 免得把"文件没挂上"洗成"这服务没有依赖"）。
+    datasource_cmdb_path: str = ""
+    # 可选的事件覆盖文件（Incident / Change 节点，与主文件同 schema）。
+    # **空 = 无事件数据——这是合法状态，不是错误**。刻意与 datasource_cmdb_path
+    # 的 fail-closed 语义相反：主文件缺失是配置问题，事件文件缺失只是还没数据。
+    datasource_incidents_path: str = ""
 
     # --- 请求与配额 ---
     # 单次上游请求超时（秒）

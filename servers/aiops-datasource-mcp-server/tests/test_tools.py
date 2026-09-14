@@ -13,6 +13,7 @@ def test_all_tools_registered() -> None:
     assert set(FACTORIES) == {
         "query_logs", "get_trace", "query_metrics", "check_infra", "describe_pod",
         "get_service_topology", "locate_repo",
+        "query_entity_graph", "infer_candidate_services",
     }
 
 

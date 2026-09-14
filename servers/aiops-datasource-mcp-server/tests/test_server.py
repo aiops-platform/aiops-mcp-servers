@@ -64,6 +64,7 @@ def test_tools_list_exposes_all_read_only(env) -> None:
     assert names == {
         "query_logs", "get_trace", "query_metrics", "check_infra", "describe_pod",
         "get_service_topology", "locate_repo",
+        "query_entity_graph", "infer_candidate_services",
     }
     # 只读注解：agent 侧（AgentScope）据此自动 ALLOW
     assert all(t["annotations"]["readOnlyHint"] is True for t in tools)

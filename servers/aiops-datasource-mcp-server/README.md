@@ -38,12 +38,28 @@ Prometheus 指标、Kubernetes 状态暴露为**领域型只读工具**。
 | `query_metrics` | **必填**（+`step_seconds`） | `service`、`metric`（5 选 1） | Prometheus `query_range` |
 | `check_infra` | 无（当前状态） | `namespace`、`pod`(可空=列全部) | `kubectl get pods` |
 | `describe_pod` | 无（当前状态） | `namespace`、`pod`(必填) | `kubectl describe pod` |
-| `get_service_topology` | 无（静态目录） | `service`(必填)、`hops`(默认 2) | 内置 CMDB 目录 + 依赖图 |
-| `locate_repo` | 无（静态目录） | `service`(必填) | 内置 CMDB 目录 |
+| `get_service_topology` | 无（静态图谱） | `service`(必填)、`hops`(默认 2) | CMDB 实体图谱 `calls` 子图 |
+| `locate_repo` | 无（静态图谱） | `service`(必填) | CMDB 实体图谱 |
+| `query_entity_graph` | 无（静态图谱） | `node_types`/`portfolios`/`key_attributes`/`edge_types`/`node_id`+`hops` | CMDB 实体图谱（全 11 类边） |
+| `infer_candidate_services` | 无（静态图谱） | `problem`(必填)、`services`(强烈建议)、`namespaces`、`max_hops`、`limit` | CMDB 实体图谱 + 推断 |
 
-> **CMDB / 拓扑**（后两个）查的是**静态服务目录**（谁调谁、归属哪个团队/仓库），
-> 不是运行时观测数据。当前数据为 **mock**（10 个服务的内置目录），但**接口是生产形态**——
-> 换真实 CMDB 只需替换 `backends/cmdb.py` 的取数实现，工具面与返回契约不变。
+> **CMDB 图谱**（后四个）查的是**静态实体图谱**（谁调谁、归属哪个业务域/仓库、有哪些事件），
+> 不是运行时观测数据。数据来自实体文件 `data/cmdb-entities.json`——**它是 CMDB 的唯一载体**，
+> 换数据只需改文件：`DATASOURCE_CMDB_PATH` 指向自己的文件即可，工具面与返回契约不变。
+> schema / 校验规则 / 边类型 / 版本规则见 **[`docs/cmdb-entities.md`](docs/cmdb-entities.md)**。
+
+**`query_entity_graph` 与 `get_service_topology` 的分工**——两者在 2 跳以上会给出不同结果，
+**这是故意的**：
+
+- `get_service_topology` 只走 `calls` 一种边，方向**相对起点**定义，把"上游的其他下游"
+  （兄弟节点）排除在外。判断**爆炸半径 / 根因**用它。
+- `query_entity_graph` 跨全部 11 类边、按四个维度筛选，聚焦时按**无向邻域**展开
+  （因为 `portfolio_link` 等边没有方向）。用途是**探索结构**。
+
+**`infer_candidate_services`** 由问题描述推断候选应用，三档证据：症状服务（强）→
+依赖拓扑扩展 → 问题文本子串匹配（弱）。每个候选带**非空的 `reasons`** 与置信档位
+（`high`/`medium`/`low`，**不给浮点分**）。`confidence`（证据强度）与 `impact`（影响面）
+是**两个独立的轴**——不让"重要"冒充"可能"。**未命中任何服务时请勿编造服务名。**
 
 `metric` 可用值（**领域语义，非 PromQL**）：`cpu_percent` / `memory_percent` /
 `disk_percent` / `error_rate` / `p95_latency_ms`。
@@ -65,7 +81,7 @@ cp .env.example .env
 uv run python -m aiops_datasource_mcp_server     # 默认 http://127.0.0.1:8300
 ```
 
-启动日志会打印已注册工具：`registered 5 tools: query_logs, get_trace, ...`
+启动日志会打印已注册工具：`registered 9 tools: query_logs, get_trace, ...`
 
 ## 配置项（.env / 环境变量）
 
@@ -85,6 +101,8 @@ uv run python -m aiops_datasource_mcp_server     # 默认 http://127.0.0.1:8300
 | `DATASOURCE_REPO_ORG` | `acme-aiops` | 未配本地 root 时 `locate_repo` 返回的远端仓库组织 |
 | `DATASOURCE_REPO_ROOT` | (空) | 本地仓库根目录；**非空**时 `locate_repo` 返回 `file://{root}/{repo}`（testbed 联调）；**无默认个人路径** |
 | `DATASOURCE_TOPOLOGY_DEFAULT_HOPS` | `2` | `get_service_topology` 默认跳数 |
+| `DATASOURCE_CMDB_PATH` | (空) | **CMDB 实体图谱文件（CMDB 的唯一载体）**；空 = 用包内 `data/cmdb-entities.json`（与 cwd 无关）。**缺失即 fail-closed 报错**——不返回空图 |
+| `DATASOURCE_INCIDENTS_PATH` | (空) | 可选的事件覆盖文件（Incident / Change）；空 = **暂无事件数据（合法状态）**。配了路径却读不到才算配置错误 |
 | `DATASOURCE_REQUEST_TIMEOUT_SEC` | `30.0` | 单次上游请求超时 |
 | `DATASOURCE_MAX_RESPONSE_BYTES` | `1048576` | 单次返回字节上限（超出流式截断并标注） |
 | `DATASOURCE_MAX_RANGE_HOURS` | `24` | 单次查询最大时间跨度（防全量扫描） |
@@ -136,3 +154,14 @@ uv run mypy servers/aiops-datasource-mcp-server/src/aiops_datasource_mcp_server
 **CMDB 拓扑**（方向相对起点、跳数限制、未知服务不报错、边方向、目录字段）、
 **repo 定位**（远端默认 / 本地 root 覆盖 / 未收录）、工具 schema、ASGI 端到端。
 上游一律用 `httpx.MockTransport`，**不触网**。
+
+CMDB 实体图谱另有三组：
+
+| 测试 | 守什么 |
+|---|---|
+| `test_cmdb_entities_data.py` | **黄金迁移测试**——把迁移前的 `_SERVICES` / `_DEPENDS_ON` 字面量冻成期望值，逐字段比对。`test_catalog_is_rich_enough` 只抽查 `owner != "unknown"`，一个属性字符串打错能溜过去；这个不会 |
+| `test_entity_graph_backend.py` | 加载器**失败矩阵**——缺文件、坏 JSON、主版本不符、缺类型键、派生标签、悬空引用、端点类型不符…每条校验配一个反例 |
+| `test_graph_query_backend.py` | 四个维度、facets 现算、未知值 fail-closed（且区分"拼错"与"没数据"）、聚焦展开 |
+| `test_inference_backend.py` | 候选推断——reasons 非空、置信/影响两轴分离、空结果被如实标记 |
+| `test_incidents_overlay.py` | 事件覆盖层——未配置不是错误、合并只增不改、事件路径真的能落到 App |
+| `test_schema_export.py` | `docs/cmdb-entities.schema.json` 与 pydantic 模型的**漂移** |

@@ -20,4 +20,4 @@ dependencies = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-aiops_datasource_mcp_server = ["py.typed"]
+aiops_datasource_mcp_server = ["py.typed", "data/*.json"]

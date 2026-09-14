@@ -1,0 +1,247 @@
+{
+  "schema_version": "1.0.0",
+  "metadata": {
+    "source": "migrated from src/aiops_datasource_mcp_server/backends/cmdb.py (_SERVICES / _DEPENDS_ON), 2026-09-14",
+    "derived_rules": {
+      "portfolio_from_namespace": {
+        "note": "Portfolio 节点由 app.attributes.namespace 派生。⚠️ namespace 是 k8s 部署分组，不是业务域；common 语义上是杂物筐（装着 owner 不同的 notification 与 audit）。将来录入真实业务域时应重新划分。",
+        "generated": true
+      },
+      "tier1_from_criticality": {
+        "note": "tags:[\"tier1\"] 由 attributes.criticality == \"critical\" 派生。tier1 是二元业务断言，criticality 是四级技术属性，二者不是同一字段的两种写法——将来若「一级系统」改为包含 high，需要解耦。",
+        "rule": "criticality == \"critical\"",
+        "generated": true
+      }
+    }
+  },
+  "ontology": {
+    "node_types": [
+      { "key": "enterprise", "label": "Enterprise", "label_zh": "企业", "view": "business" },
+      { "key": "journey", "label": "Journey", "label_zh": "业务旅程", "view": "business" },
+      { "key": "portfolio", "label": "Portfolio", "label_zh": "业务域", "view": "business" },
+      { "key": "cross_journey_hub", "label": "Cross-Journey hub", "label_zh": "跨旅程枢纽", "view": "business" },
+      { "key": "app", "label": "App", "label_zh": "应用", "view": "application" },
+      { "key": "team", "label": "Team", "label_zh": "团队", "view": "organization" },
+      { "key": "agent", "label": "Agent", "label_zh": "智能体", "view": "organization" },
+      { "key": "tool", "label": "Tool", "label_zh": "工具", "view": "organization" },
+      { "key": "codebase", "label": "Codebase", "label_zh": "代码仓库", "view": "engineering" },
+      { "key": "wiki", "label": "Wiki", "label_zh": "知识文档", "view": "engineering" },
+      { "key": "incident", "label": "Incident", "label_zh": "故障事件", "view": "operations" },
+      { "key": "change", "label": "Change", "label_zh": "变更事件", "view": "operations" }
+    ],
+    "edge_types": [
+      {
+        "key": "journey_link", "label": "Journey link", "label_zh": "旅程关联",
+        "directed": false, "from_types": ["journey"], "to_types": ["portfolio"],
+        "attributes": {}, "origin": "reference"
+      },
+      {
+        "key": "portfolio_link", "label": "Portfolio link", "label_zh": "业务域归属",
+        "directed": false, "from_types": ["portfolio"], "to_types": ["app"],
+        "attributes": {}, "origin": "reference"
+      },
+      {
+        "key": "cross_journey_link", "label": "Cross-journey link", "label_zh": "跨旅程关联",
+        "directed": false, "from_types": ["journey"], "to_types": ["cross_journey_hub"],
+        "attributes": {}, "origin": "reference"
+      },
+      {
+        "key": "support", "label": "Support · team + wiki", "label_zh": "支撑关系",
+        "directed": false, "from_types": ["app"], "to_types": ["team", "wiki"],
+        "attributes": { "support_kind": ["team", "wiki"] }, "origin": "reference"
+      },
+      {
+        "key": "agent_watches", "label": "Agent watches", "label_zh": "智能体监视",
+        "directed": true, "from_types": ["agent"], "to_types": ["app"],
+        "attributes": {}, "origin": "reference"
+      },
+      {
+        "key": "tool_integrates", "label": "Tool integrates", "label_zh": "工具集成",
+        "directed": true, "from_types": ["tool"], "to_types": ["app", "agent"],
+        "attributes": {}, "origin": "reference"
+      },
+      {
+        "key": "storm_fan_out", "label": "Storm fan-out", "label_zh": "故障风暴扇出",
+        "directed": true, "from_types": ["incident"], "to_types": ["incident"],
+        "attributes": {}, "origin": "reference"
+      },
+      {
+        "key": "change_causes_incident", "label": "Change → incident", "label_zh": "变更引发故障",
+        "directed": true, "from_types": ["change"], "to_types": ["incident"],
+        "attributes": {}, "origin": "reference"
+      },
+      {
+        "key": "incident_cluster_app", "label": "Incident cluster → app", "label_zh": "故障簇落点",
+        "directed": true, "from_types": ["incident"], "to_types": ["app"],
+        "attributes": {}, "origin": "reference"
+      },
+      {
+        "key": "change_cluster_app", "label": "Change cluster → app", "label_zh": "变更簇落点",
+        "directed": true, "from_types": ["change"], "to_types": ["app"],
+        "attributes": {}, "origin": "reference"
+      },
+      {
+        "key": "calls", "label": "Calls (dependency)", "label_zh": "服务调用依赖",
+        "directed": true, "from_types": ["app"], "to_types": ["app"],
+        "attributes": { "relation": ["http", "rpc", "mq"] }, "origin": "local"
+      }
+    ],
+    "key_attributes": [
+      { "key": "tier1", "label": "Tier 1", "label_zh": "一级系统" },
+      { "key": "holiday_critical", "label": "Holiday-critical", "label_zh": "节假日关键" },
+      { "key": "finance_freeze", "label": "Finance-freeze", "label_zh": "财务冻结期" },
+      { "key": "manhattan_wms_spotlight", "label": "Manhattan WMS spotlight", "label_zh": "WMS 关注焦点" }
+    ],
+    "derived_metrics": [
+      {
+        "key": "top10_incidents_18m", "label": "Top 10 by incidents · 18M", "window_months": 18,
+        "source": "incident store", "computed_by": "not-computed-in-this-server"
+      },
+      {
+        "key": "top10_changes_13m", "label": "Top 10 by changes · 13M", "window_months": 13,
+        "source": "change store", "computed_by": "not-computed-in-this-server"
+      },
+      {
+        "key": "emergency_changes", "label": "Emergency changes", "window_months": null,
+        "source": "change store", "computed_by": "not-computed-in-this-server"
+      }
+    ]
+  },
+  "nodes": {
+    "enterprise": [],
+    "journey": [],
+    "portfolio": [
+      {
+        "id": "portfolio:order", "type": "portfolio", "name": "order",
+        "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null
+      },
+      {
+        "id": "portfolio:payment", "type": "portfolio", "name": "payment",
+        "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null
+      },
+      {
+        "id": "portfolio:inventory", "type": "portfolio", "name": "inventory",
+        "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null
+      },
+      {
+        "id": "portfolio:logistics", "type": "portfolio", "name": "logistics",
+        "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null
+      },
+      {
+        "id": "portfolio:common", "type": "portfolio", "name": "common",
+        "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null
+      },
+      {
+        "id": "portfolio:account", "type": "portfolio", "name": "account",
+        "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null
+      }
+    ],
+    "cross_journey_hub": [],
+    "app": [
+      {
+        "id": "app:gateway-service", "type": "app", "name": "gateway-service",
+        "display_name": null,
+        "attributes": { "namespace": "order", "owner": "网关团队", "tier": "edge", "tech": "Spring Cloud Gateway", "runtime": "k8s", "criticality": "high" },
+        "tags": [], "refs": { "repo_ref": "codebase:aiops-test-gateway-service" }, "notes": null
+      },
+      {
+        "id": "app:order-service", "type": "app", "name": "order-service",
+        "display_name": null,
+        "attributes": { "namespace": "order", "owner": "交易履约", "tier": "core", "tech": "Java / Spring Boot", "runtime": "k8s", "criticality": "critical" },
+        "tags": ["tier1"], "refs": { "repo_ref": "codebase:aiops-test-order-service" }, "notes": null
+      },
+      {
+        "id": "app:warranty-service", "type": "app", "name": "warranty-service",
+        "display_name": null,
+        "attributes": { "namespace": "order", "owner": "售后保障", "tier": "core", "tech": "Java / Spring Boot", "runtime": "k8s", "criticality": "high" },
+        "tags": [], "refs": { "repo_ref": "codebase:aiops-test-warranty-service" }, "notes": null
+      },
+      {
+        "id": "app:payment-service", "type": "app", "name": "payment-service",
+        "display_name": null,
+        "attributes": { "namespace": "payment", "owner": "支付团队", "tier": "core", "tech": "Java / Spring Boot", "runtime": "k8s", "criticality": "critical" },
+        "tags": ["tier1"], "refs": { "repo_ref": "codebase:payment-service" }, "notes": null
+      },
+      {
+        "id": "app:inventory-service", "type": "app", "name": "inventory-service",
+        "display_name": null,
+        "attributes": { "namespace": "inventory", "owner": "库存团队", "tier": "core", "tech": "Go", "runtime": "k8s", "criticality": "high" },
+        "tags": [], "refs": { "repo_ref": "codebase:inventory-service" }, "notes": null
+      },
+      {
+        "id": "app:pricing-service", "type": "app", "name": "pricing-service",
+        "display_name": null,
+        "attributes": { "namespace": "order", "owner": "定价团队", "tier": "core", "tech": "Java / Spring Boot", "runtime": "k8s", "criticality": "medium" },
+        "tags": [], "refs": { "repo_ref": "codebase:pricing-service" }, "notes": null
+      },
+      {
+        "id": "app:logistics-service", "type": "app", "name": "logistics-service",
+        "display_name": null,
+        "attributes": { "namespace": "logistics", "owner": "履约调度", "tier": "support", "tech": "Go", "runtime": "k8s", "criticality": "medium" },
+        "tags": [], "refs": { "repo_ref": "codebase:logistics-service" }, "notes": null
+      },
+      {
+        "id": "app:notification-service", "type": "app", "name": "notification-service",
+        "display_name": null,
+        "attributes": { "namespace": "common", "owner": "平台基础", "tier": "support", "tech": "Python / FastAPI", "runtime": "k8s", "criticality": "low" },
+        "tags": [], "refs": { "repo_ref": "codebase:notification-service" }, "notes": null
+      },
+      {
+        "id": "app:user-service", "type": "app", "name": "user-service",
+        "display_name": null,
+        "attributes": { "namespace": "account", "owner": "用户中心", "tier": "core", "tech": "Java / Spring Boot", "runtime": "k8s", "criticality": "high" },
+        "tags": [], "refs": { "repo_ref": "codebase:user-service" }, "notes": null
+      },
+      {
+        "id": "app:audit-service", "type": "app", "name": "audit-service",
+        "display_name": null,
+        "attributes": { "namespace": "common", "owner": "安全合规", "tier": "support", "tech": "Go", "runtime": "k8s", "criticality": "low" },
+        "tags": [], "refs": { "repo_ref": "codebase:audit-service" }, "notes": null
+      }
+    ],
+    "team": [],
+    "agent": [],
+    "tool": [],
+    "codebase": [
+      { "id": "codebase:aiops-test-gateway-service", "type": "codebase", "name": "aiops-test-gateway-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null },
+      { "id": "codebase:aiops-test-order-service", "type": "codebase", "name": "aiops-test-order-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null },
+      { "id": "codebase:aiops-test-warranty-service", "type": "codebase", "name": "aiops-test-warranty-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null },
+      { "id": "codebase:payment-service", "type": "codebase", "name": "payment-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null },
+      { "id": "codebase:inventory-service", "type": "codebase", "name": "inventory-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null },
+      { "id": "codebase:pricing-service", "type": "codebase", "name": "pricing-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null },
+      { "id": "codebase:logistics-service", "type": "codebase", "name": "logistics-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null },
+      { "id": "codebase:notification-service", "type": "codebase", "name": "notification-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null },
+      { "id": "codebase:user-service", "type": "codebase", "name": "user-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null },
+      { "id": "codebase:audit-service", "type": "codebase", "name": "audit-service", "display_name": null, "attributes": {}, "tags": [], "refs": {}, "notes": null }
+    ],
+    "wiki": [],
+    "incident": [],
+    "change": []
+  },
+  "edges": [
+    { "id": "e:calls:gateway-service->order-service", "type": "calls", "from": "app:gateway-service", "to": "app:order-service", "attributes": { "relation": "http" } },
+    { "id": "e:calls:gateway-service->user-service", "type": "calls", "from": "app:gateway-service", "to": "app:user-service", "attributes": { "relation": "http" } },
+    { "id": "e:calls:order-service->warranty-service", "type": "calls", "from": "app:order-service", "to": "app:warranty-service", "attributes": { "relation": "rpc" } },
+    { "id": "e:calls:order-service->payment-service", "type": "calls", "from": "app:order-service", "to": "app:payment-service", "attributes": { "relation": "rpc" } },
+    { "id": "e:calls:order-service->inventory-service", "type": "calls", "from": "app:order-service", "to": "app:inventory-service", "attributes": { "relation": "rpc" } },
+    { "id": "e:calls:order-service->pricing-service", "type": "calls", "from": "app:order-service", "to": "app:pricing-service", "attributes": { "relation": "rpc" } },
+    { "id": "e:calls:order-service->notification-service", "type": "calls", "from": "app:order-service", "to": "app:notification-service", "attributes": { "relation": "mq" } },
+    { "id": "e:calls:payment-service->audit-service", "type": "calls", "from": "app:payment-service", "to": "app:audit-service", "attributes": { "relation": "mq" } },
+    { "id": "e:calls:payment-service->notification-service", "type": "calls", "from": "app:payment-service", "to": "app:notification-service", "attributes": { "relation": "mq" } },
+    { "id": "e:calls:inventory-service->logistics-service", "type": "calls", "from": "app:inventory-service", "to": "app:logistics-service", "attributes": { "relation": "http" } },
+    { "id": "e:calls:inventory-service->pricing-service", "type": "calls", "from": "app:inventory-service", "to": "app:pricing-service", "attributes": { "relation": "rpc" } },
+    { "id": "e:calls:logistics-service->notification-service", "type": "calls", "from": "app:logistics-service", "to": "app:notification-service", "attributes": { "relation": "mq" } },
+    { "id": "e:calls:user-service->audit-service", "type": "calls", "from": "app:user-service", "to": "app:audit-service", "attributes": { "relation": "mq" } },
+
+    { "id": "e:portfolio_link:order->gateway-service", "type": "portfolio_link", "from": "portfolio:order", "to": "app:gateway-service", "attributes": {} },
+    { "id": "e:portfolio_link:order->order-service", "type": "portfolio_link", "from": "portfolio:order", "to": "app:order-service", "attributes": {} },
+    { "id": "e:portfolio_link:order->warranty-service", "type": "portfolio_link", "from": "portfolio:order", "to": "app:warranty-service", "attributes": {} },
+    { "id": "e:portfolio_link:order->pricing-service", "type": "portfolio_link", "from": "portfolio:order", "to": "app:pricing-service", "attributes": {} },
+    { "id": "e:portfolio_link:payment->payment-service", "type": "portfolio_link", "from": "portfolio:payment", "to": "app:payment-service", "attributes": {} },
+    { "id": "e:portfolio_link:inventory->inventory-service", "type": "portfolio_link", "from": "portfolio:inventory", "to": "app:inventory-service", "attributes": {} },
+    { "id": "e:portfolio_link:logistics->logistics-service", "type": "portfolio_link", "from": "portfolio:logistics", "to": "app:logistics-service", "attributes": {} },
+    { "id": "e:portfolio_link:common->notification-service", "type": "portfolio_link", "from": "portfolio:common", "to": "app:notification-service", "attributes": {} },
+    { "id": "e:portfolio_link:common->audit-service", "type": "portfolio_link", "from": "portfolio:common", "to": "app:audit-service", "attributes": {} },
+    { "id": "e:portfolio_link:account->user-service", "type": "portfolio_link", "from": "portfolio:account", "to": "app:user-service", "attributes": {} }
+  ]
+}
