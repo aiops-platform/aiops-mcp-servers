@@ -42,20 +42,28 @@
 
 ## 2. 节点（12 类）
 
-| 类型键 | 名称 | 视角 | 本 CMDB 已录入 |
+| 层 | 类型键 | 名称 | 本 CMDB 已录入 |
 |---|---|---|---|
-| `enterprise` | Enterprise | business | 0 |
-| `journey` | Journey | business | 0 |
-| `portfolio` | Portfolio | business | **6** |
-| `cross_journey_hub` | Cross-Journey hub | business | 0 |
-| `app` | App | application | **10** |
-| `team` | Team | organization | 0 |
-| `agent` | Agent | organization | 0 |
-| `tool` | Tool | organization | 0 |
-| `codebase` | Codebase | engineering | **10** |
-| `wiki` | Wiki | engineering | 0 |
-| `incident` | Incident | operations | 0（见 §6 覆盖层） |
-| `change` | Change | operations | 0（见 §6 覆盖层） |
+| **业务** | `enterprise` | Enterprise（企业功能） | 0 |
+| | `journey` | Journey（用户旅程） | 0 |
+| | `portfolio` | Portfolio（业务领域） | **0** ⚠️ 见 §5.1 |
+| | `domain` | Domain（业务细域） | 0 |
+| **应用** | `app` | App（应用／云环境） | **10** |
+| **支撑** | `team` / `agent` / `tool` | 团队 / 智能体 / 工具 | 0 |
+| **工程** | `codebase` / `wiki` | 代码仓库 / 知识文档 | **10** |
+| **事件** | `incident` / `change` | 故障 / 变更 | 0（见 §6 覆盖层） |
+
+**业务层四类的层级**（收敛树，逐层变细）：
+
+```
+Enterprise ──→ Journey ──→ Portfolio ──┐
+                                      ├──→ App
+                            Domain ───┘
+```
+
+⚠️ **`domain` 与 `portfolio` 平行，不是它的子级。** 两者各自直连 App，
+边规则与 `tool` / `codebase` 同构。收益是**两条独立的召回路径**——同一 App 被两条路径
+分别命中即可交叉验证；且它们的 `terms` 各写各的，互不挤占。
 
 ### 节点 envelope
 
@@ -65,10 +73,13 @@
   "type": "app",
   "name": "order-service",
   "display_name": null,
-  "attributes": { "namespace": "order", "owner": "交易履约", "tier": "core",
-                  "tech": "Java / Spring Boot", "runtime": "k8s", "criticality": "critical" },
+  "description": "订单主流程服务：接收下单请求，编排支付/库存/定价/售后等下游调用",
+  "attributes": { "kind": "application", "namespace": "order", "owner": "交易履约",
+                  "tier": "core", "tech": "Java / Spring Boot", "runtime": "k8s",
+                  "criticality": "critical" },
   "tags": ["tier1"],
-  "refs": { "repo_ref": "codebase:aiops-test-order-service" },
+  "keywords": ["order-service", "order", "订单", "下单", "交易履约", "Java", "Spring Boot"],
+  "refs": {},
   "notes": null
 }
 ```
@@ -76,41 +87,102 @@
 - **`id` 带类型前缀**（`<type>:<slug>`），校验前缀必须等于 `type`。工具边界会剥掉前缀，
   所以 `get_service_topology("order-service")` 这类调用不受影响。
 - **`name` 是自然键**，同类型内唯一。
-- **`attributes` 按类型校验**（pydantic，`extra="forbid"`）。目前只有 `app` 有严格模型：
-  - `tier` ∈ `edge` / `core` / `support`
-  - `criticality` ∈ `critical` / `high` / `medium` / `low`
-- **`tags`** 只能取 `ontology.key_attributes` 里声明的**静态**标签（见 §4）。
-- **`refs`** 是类型化指针（**不是边**）。目前用于 App → Codebase。
+- **`description`**（信封层，**所有类型共有**）：一句话说明**这个节点是干什么的**，
+  给 LLM 判断相关性用。与 `display_name` 同类，所以不放各类型的 attributes 里——
+  避免每个类型各定义一个同名同义的字段。
+- **`attributes` 按类型校验**（pydantic，`extra="forbid"`）：
+  - **`app`**：`kind` ∈ `application` / `environment`（**必填**，见下）；
+    `tier` ∈ `edge` / `core` / `support`；`criticality` ∈ `critical` / `high` / `medium` / `low`；
+    `business_role` 可选。
+  - **`enterprise` / `journey` / `portfolio` / `domain`**：只有 `capability`
+    （可选，**当前空置**——业务语义待录入，见 §5.1）。
+- **`tags`**：**封闭**词表，只能取 `ontology.key_attributes` 里声明的横切业务标签（见 §4）。
+- **`keywords`**：**开放**自由词，供关键词召回命中。见下。
+- **`refs`** 是类型化指针（不是边）。**当前全部为空**——原先唯一的用途
+  （`repo_ref` → Codebase）已于 2026-09-15 提升为 `app_codebase` 边，见 §3。
 
-> **`refs` 为什么不是边**：参考 ontology 的 10 类边里**没有** App→Codebase 关系
-> （Codebase 是个没有任何命名边指向它的节点类型）。用受校验的引用字段表达，将来
-> 若确认它确实是边，提升为真边是 schema-**minor** 改动。
+#### `tags` 封闭 vs `keywords` 开放——为什么分成两个字段
+
+| | `tags` | `keywords` |
+|---|---|---|
+| 词表 | **封闭**（`ontology.key_attributes` 声明的 4 个） | **开放**（任意词） |
+| 语义 | 横切业务标签，**有语义、可枚举** | 只为"能被问题描述命中"，**不承载语义** |
+| 用途 | 筛选器可穷举、可作为流程判据 | 文本召回 |
+| 稀疏性 | **大多数节点天然没有标签**——这是对的 | 每个节点都该有 |
+
+**为什么不全塞进 `tags`**：`tags` 的封闭性是**故意的**——当初设它就为了挡住派生指标
+（Top 10 by incidents 那几个带时间窗口的）混进静态文件，也为了"tier1 到底是什么"
+有个唯一的权威答案。开放它等于放弃这两条。
+
+校验上还做了两件事，防职责混淆：
+
+1. **空串与重复项被拒**——空串能匹配任何文本，会把该节点灌进所有查询结果
+2. **同一个词不得既在 `tags` 又在 `keywords`**——否则"该按标签筛还是按关键词搜"说不清；
+   发现即报，逼人明确选一边
+
+#### `app.kind`：应用与云环境共用一类节点
+
+按 v5.7 的约定，App 节点既表示**具体实现某个业务域的应用/服务**，**也表示它所在的云环境**
+（如 `azure-cn-north3`）。`kind` 用来区分两者——判断相关性时能据此排除环境节点：
+工单问的通常是服务，不是机房。
+
+#### 业务语义的三个字段，用途不同不能合并
+
+| 字段 | 位置 | 用途 | 谁消费 | 为什么不能合并 |
+|---|---|---|---|---|
+| `keywords` | **信封层** | **检索键**——用户/工单里实际会说的词 | 确定性关键词召回 | 要的是**高召回**：宁可多捞，词可以很粗 |
+| `description` | **信封层** | **判断依据**——这业务域干什么、边界在哪 | LLM 推理 | 要的是**高精度**：需要语义，不是关键词 |
+| `capability` | attributes | 业务能力名（Journey 层用） | 展示与归类 | 给人和 UI 看 |
+
+> ⚠️ **业务层的 `keywords` 该怎么写**：不由"这个业务域是什么"决定，而由
+> **"用户会怎么描述它出问题"**决定。写「售后服务选择」是业务视角、不会有人这么说；
+> 写「退货」「换货」「申请售后没反应」才是问题视角——**只有后者能被工单命中**。
+
+**另一个陷阱**：`terms` 是 v5.7 **撤掉**的字段名（已统一到信封层的 `keywords`）。
+写 `terms` 会被属性模型**硬拒**——这是故意的，否则写了它的人会以为检索词生效了，
+实际是个死字段。
 
 ---
 
-## 3. 边（11 类）
+## 3. 边（13 类）与**分层约束**
 
-| 类型键 | 名称 | 方向 | 端点 |
-|---|---|---|---|
-| `journey_link` | Journey link | 无向 | journey — portfolio |
-| `portfolio_link` | Portfolio link | 无向 | portfolio — app |
-| `cross_journey_link` | Cross-journey link | 无向 | journey — cross_journey_hub |
-| `support` | Support · team + wiki | 无向 | app — team / app — wiki |
-| `agent_watches` | Agent watches | 有向 | agent → app |
-| `tool_integrates` | Tool integrates | 有向 | tool → app / agent |
-| `storm_fan_out` | Storm fan-out | 有向 | incident → incident |
-| `change_causes_incident` | Change → incident | 有向 | change → incident |
-| `incident_cluster_app` | Incident cluster → app | 有向 | incident → app |
-| `change_cluster_app` | Change cluster → app | 有向 | change → app |
-| **`calls`** | Calls (dependency) | 有向 | app → app，属性 `relation ∈ {http, rpc, mq}` |
-
-前 10 类照搬参考 ontology；**`calls` 是本地新增的第 11 类**——参考图里**没有**服务调用边
-（它的 `Storm fan-out` 是故障扇出，不是调用依赖），而这条是我们有且不能丢的。
+| layer | 类型键 | 名称 | 方向 | 端点 |
+|---|---|---|---|---|
+| **business** | `enterprise_journey` | Enterprise journey | 无向 | enterprise — journey |
+| | `journey_link` | Journey link | 无向 | journey — portfolio |
+| | `portfolio_link` | Portfolio link | 无向 | portfolio — app |
+| | `domain_link` | Domain link | 无向 | domain — app |
+| **runtime** | **`calls`** | Calls (dependency) | 有向 | app → app，属性 `relation ∈ {http, rpc, mq}` |
+| **support** | `app_codebase` | App → codebase | 无向 | app — codebase |
+| | `support` | Support · team + wiki | 无向 | app — team / app — wiki |
+| | `agent_watches` | Agent watches | 有向 | agent → app |
+| | `tool_integrates` | Tool integrates | 有向 | tool → app / agent |
+| **event** | `incident_cluster_app` | Incident cluster → app | 有向 | incident → app |
+| | `change_cluster_app` | Change cluster → app | 有向 | change → app |
+| | `change_causes_incident` | Change → incident | 有向 | change → incident |
+| | `storm_fan_out` | Storm fan-out | 有向 | incident → incident |
 
 **无向边两个方向都合法**（`portfolio — app` 与 `app — portfolio` 等价）。
 
-`support` 合并了 Team 与 Wiki 两类支撑物（照参考图的形状），用
+`support` 合并了 Team 与 Wiki 两类支撑物（照参考 ontology 的形状），用
 `attributes.support_kind ∈ {team, wiki}` 区分。将来若要拆成两条边，是 minor 改动。
+
+### `layer` 与 business 层约束（**enforced，不是文档约定**）
+
+每类边**必须声明 `layer`**，它把「app 与 app 之间不能直接关联，要通过业务域」这条规则
+变成**可校验的约束**：
+
+```
+business 层：禁止 app — app
+```
+
+**校验发生在声明层**：loader 拒绝任何 `layer == "business"` 且 `from_types` / `to_types`
+同时含 `app` 的边类型——任何数据都必然违规，与其等坏数据进来再报错，不如让这种声明
+根本无法通过。
+
+**为什么 `calls`（app → app）不算违规**：它归 **runtime 层**，语义是**观测到的运行时依赖
+事实**，不是业务归属。删掉它，`get_service_topology`（爆炸半径 / 上游根因）立即失去
+数据源——**分层把"业务归属"与"运行时依赖"分开，而不是一刀切禁掉 app—app**。
 
 ---
 
@@ -148,20 +220,52 @@
 
 ## 5. 本文件的派生规则（见 `metadata.derived_rules`）
 
-当前 10 个 App、6 个 Portfolio、10 个 Codebase 里有**两处是派生来的**，不是外部录入的。
+当前 10 个 App、10 个 Codebase 里有**两处是派生来的**，不是外部录入的。
 写在这里是为了让 review 的人知道它们的来源。
 
-### 5.1 Portfolio ← `namespace`
+### 5.0 `description` 与 `keywords` —— **全部为派生**
 
-**6 个 Portfolio 全部由 `attributes.namespace` 派生**：`order`(4) / `common`(2) /
-`payment`(1) / `inventory`(1) / `logistics`(1) / `account`(1)。
+20 个节点的 `description` 与 `keywords` **不是外部录入的**：
 
-> ⚠️ **这层映射有语义落差，将来必须修**：`namespace` 是 **k8s 部署分组**，不是参考
-> ontology 里的**业务域**。最明显的是 `common`——它装着两个 owner 完全不同的服务
-> （`notification-service`「平台基础」和 `audit-service`「安全合规」），语义上是个杂物筐。
-> 6 个 Portfolio 里 4 个是单例。
+| 字段 | 怎么来的 |
+|---|---|
+| `description` | 由 `tech` + `owner` + `tier` + **调用图中的位置**合成 |
+| `keywords` | 由 `name` / `owner` **机械派生**；中文词是服务名与 owner 的忠实中译 |
+
+⚠️ **技术栈词（`Java` / `Go` / `Spring Boot` / `Python` …）已从 `keywords` 移除。**
+它们是**共享属性**（6 个服务都跑 Java、3 个都在 order namespace），由 `tech` 字段匹配
+即可；留在 `keywords` 里会让「命中 tech」被当成**识别性命中**，进而把 6 个服务全抬一档。
+匹配器据此把"只命中共享属性"压到 `low` 置信——**"命中"只说明它在那个集合里，
+不说明它与故障有关**。
+
+所以 `keywords` 里现在只放**说明它是谁**的词：服务名、服务名变体、中文翻译、owner 标签。
+
+> ⚠️ **它们不含任何真实用户用语。** `keywords` 里的「订单」「支付」「库存」是从
+> `order-service` / `payment-service` / `inventory-service` **翻译**过来的，
+> **不是**从真实工单里统计出来的。
 >
-> 录入真实业务域时应重新划分，并同时调整 `portfolio_link` 边。
+> 所以：**业务语言的召回仍然会落空。** 用户说「结账卡住」「单子下不了」时，
+> 这些词一个都不在 `keywords` 里。**真正的召回能力要靠真实工单里的说法补齐**——
+> 这是本文件当前最大的已知缺口。
+
+### 5.1 ⚠️ 业务层是完全空置的——那批 Portfolio **已被删除**
+
+**曾经的 6 个 Portfolio**（`order` / `common` / `payment` / `inventory` / `logistics` /
+`account`）**已于 2026-09-15 全部删除**。它们是由 `attributes.namespace` 派生的。
+
+删除的原因是**它们语义上是错的**：`namespace` 是 **k8s 部署分组**，不是**业务领域**。
+最明显的是 `common`——它装着两个 owner 完全不同的服务（`notification-service`
+「平台基础」和 `audit-service`「安全合规」），业务上是个杂物筐。6 个里 4 个还是单例。
+
+> **为什么是删除而不是改名沿用**：改名会把「部署分组」的语义残留带进业务分类——
+> 那比空着更糟，因为它会让人以为业务域已经理过了。
+
+**现状**：`enterprise` / `journey` / `portfolio` / `domain` **四类节点数均为 0**，
+业务语义（`description` / `terms` / `capability`）全部待录入。
+
+**这意味着**：当前任何基于业务层的召回都会落空，只能靠 App 级真实字段
+（`name` / `namespace` / `owner` / `tech`）与 `calls` 拓扑。**业务域录入是提升
+「问题 → 服务」定位能力的前提**，schema 已就位（见 §2 的业务层属性）。
 
 ### 5.2 `tier1` ← `criticality == "critical"`
 
@@ -229,12 +333,15 @@
 3. 顶层与 `ontology` 的 `extra="forbid"`（打错的键不会静默忽略）
 4. `nodes` 的类型键集合 == `ontology.node_types` 声明的集合
 5. `ontology` 自洽：`key_attributes` 与 `derived_metrics` 的 key 互斥
-6. 逐节点：id 格式 / 前缀等于 type / 全局唯一 / `(type, name)` 唯一 / 属性合模型
-7. `tags` ⊆ 静态标签（派生键专报错）
-8. `refs` 指向存在的节点
-9. 逐边：id 唯一 / 类型已声明 / 端点存在 / 端点类型相容（无向边允许反向）/ 属性在词表内 /
-   `(type, from, to)` 不重复
-10. `calls` 子图只引用已知 app（`cmdb._bfs` 依赖此不变量）
+6. **`ontology` 自洽：business 层不得声明 app—app 边**（§3 的分层约束）
+7. 逐节点：id 格式 / 前缀等于 type / 全局唯一 / `(type, name)` 唯一 / 属性合模型
+8. `tags` ⊆ 静态标签（派生键专报错）
+9. `keywords`：不得含空串或重复项；**不得与 `tags` 重名**（职责混淆）
+10. `refs` 指向存在的节点
+10. 逐边：id 唯一 / 类型已声明 / 端点存在 / 端点类型相容（无向边允许反向）/ 属性在词表内 /
+    `(type, from, to)` 不重复
+11. `calls` 子图只引用已知 app（`cmdb._bfs` 依赖此不变量）
+12. 每个边类型**必须声明 `layer`**（缺了就无法执行第 6 条）
 
 **不做环检测**：真实 CMDB 可能有环，`_bfs` 已用 `dist` memo 正确处理。
 

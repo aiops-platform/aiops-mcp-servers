@@ -40,7 +40,7 @@ Prometheus 指标、Kubernetes 状态暴露为**领域型只读工具**。
 | `describe_pod` | 无（当前状态） | `namespace`、`pod`(必填) | `kubectl describe pod` |
 | `get_service_topology` | 无（静态图谱） | `service`(必填)、`hops`(默认 2) | CMDB 实体图谱 `calls` 子图 |
 | `locate_repo` | 无（静态图谱） | `service`(必填) | CMDB 实体图谱 |
-| `query_entity_graph` | 无（静态图谱） | `node_types`/`portfolios`/`key_attributes`/`edge_types`/`node_id`+`hops` | CMDB 实体图谱（全 11 类边） |
+| `query_entity_graph` | 无（静态图谱） | `node_types`/`portfolios`/`key_attributes`/`edge_types`/`node_id`+`hops` | CMDB 实体图谱（全 13 类边） |
 | `infer_candidate_services` | 无（静态图谱） | `problem`(必填)、`services`(强烈建议)、`namespaces`、`max_hops`、`limit` | CMDB 实体图谱 + 推断 |
 
 > **CMDB 图谱**（后四个）查的是**静态实体图谱**（谁调谁、归属哪个业务域/仓库、有哪些事件），
@@ -53,13 +53,33 @@ Prometheus 指标、Kubernetes 状态暴露为**领域型只读工具**。
 
 - `get_service_topology` 只走 `calls` 一种边，方向**相对起点**定义，把"上游的其他下游"
   （兄弟节点）排除在外。判断**爆炸半径 / 根因**用它。
-- `query_entity_graph` 跨全部 11 类边、按四个维度筛选，聚焦时按**无向邻域**展开
+- `query_entity_graph` 跨全部 13 类边、按四个维度筛选，聚焦时按**无向邻域**展开
   （因为 `portfolio_link` 等边没有方向）。用途是**探索结构**。
 
-**`infer_candidate_services`** 由问题描述推断候选应用，三档证据：症状服务（强）→
-依赖拓扑扩展 → 问题文本子串匹配（弱）。每个候选带**非空的 `reasons`** 与置信档位
-（`high`/`medium`/`low`，**不给浮点分**）。`confidence`（证据强度）与 `impact`（影响面）
-是**两个独立的轴**——不让"重要"冒充"可能"。**未命中任何服务时请勿编造服务名。**
+**`infer_candidate_services`** 由问题描述推断候选应用。四类证据：
+
+| 证据 | 说明 |
+|---|---|
+| **E1 症状服务** | 调用方已确认的服务名（**强烈建议传**）+ 沿 `calls` 的拓扑扩展 |
+| **E2 分层关键词匹配** | 扫**所有节点类型**：app 的 name/`keywords`/属性字段，以及**业务层**（journey/portfolio/domain）——命中后沿业务边**下钻**到 app |
+| **E3 事件** | 命中 Incident/Change 后沿事件边落点（**当前无事件数据，恒不生效**） |
+| **E4 交叉验证** | 同一 app 被多条独立路径命中 → **升一档** |
+
+**置信度按证据类型分档**，不是按命中位置——`high` 只留给**直接证据**（症状服务 /
+工单 `cmdb_ci` 指定）；识别性命中（name/`keywords`）、`domain` 下钻、拓扑邻居是 `medium`；
+`portfolio`/`journey`/`enterprise` 下钻、只命中**共享属性**（tech/owner/namespace）是 `low`。
+
+> 为什么把"只命中共享属性"压到 `low`：6 个服务都跑 Java、3 个都在 order namespace，
+> **"命中"只说明它在那个集合里，不说明它与故障有关**。「升级 Java 版本」会正确列出所有
+> Java 服务，但它们是 `low` 而不是 `high`。
+
+每个候选带**非空的 `reasons`** 与 `hit_paths` / `matched_layers`（交叉验证的依据）。
+**不给浮点分**——那会暗示一个不存在的校准模型。`confidence`（证据强度）与 `impact`
+（影响面）是**两个独立的轴**——不让"重要"冒充"可能"。**未命中任何服务时请勿编造服务名。**
+
+> ⚠️ **召回能力取决于 `keywords` 的质量，而当前 `keywords` 是派生的**（由服务名/owner/tech
+> 机械翻译，不含真实用户用语）。用户说「结账卡住」时仍可能匹配不上——**真实召回要靠
+> 真实工单里的说法补齐**。
 
 `metric` 可用值（**领域语义，非 PromQL**）：`cpu_percent` / `memory_percent` /
 `disk_percent` / `error_rate` / `p95_latency_ms`。

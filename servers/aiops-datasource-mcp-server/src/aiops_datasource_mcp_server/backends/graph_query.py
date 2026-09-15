@@ -16,6 +16,7 @@ EDGE TYPE——参数名与维度一一对应，调用方（agent 或将来的�
 """
 from __future__ import annotations
 
+import re
 from collections import deque
 from typing import Any
 
@@ -25,11 +26,59 @@ from aiops_datasource_mcp_server.errors import AppError, ErrorCode
 #: 候选服务推断沿这些边扩展（``incident_cluster_app`` 等在有事件数据时才有效果）。
 _EXPANSION_EDGE_TYPES = ("calls", "incident_cluster_app", "change_cluster_app")
 
-#: 参与候选推断的静态字段（E2 文本匹配）。
-_TEXT_MATCH_FIELDS = ("name", "owner", "namespace", "tech")
+#: app 上参与子串匹配的**属性**字段。
+#: ⚠️ 服务名不在 attributes 里，它是节点的 ``name`` 字段——见 ``_match_node``。
+_TEXT_MATCH_FIELDS = ("owner", "namespace", "tech")
 
-#: 参与子串匹配的字段值最小长度——防止 "Go" 这类短值在任意文本里误命中。
+#: 纯 ASCII 值参与子串匹配的最小长度——防止 `tech="Go"` 匹配 "logs are **go**ing crazy"。
 _MIN_TEXT_MATCH_LEN = 3
+
+#: 含 CJK 的值只需 2 字符（见 ``_min_match_len``）。
+_MIN_CJK_MATCH_LEN = 2
+
+_CJK_RE = re.compile(r"[一-鿿]")
+
+#: 字段值的分隔符——用于把 ``tech: "Java / Spring Boot"`` 切成可独立匹配的词元。
+_FIELD_SPLIT_RE = re.compile(r"\s*[/,;、，]\s*")
+
+
+def _field_tokens(value: str) -> list[str]:
+    """把字段值切成**可独立匹配**的词元。
+
+    ``tech: "Java / Spring Boot"`` **整串**拿去子串匹配是没用的——工单里不会出现
+    ``"Java / Spring Boot"`` 这一整串，所以「升级 Java 版本」永远匹配不上。
+    必须按分隔符切成 ``["Java", "Spring Boot"]`` 逐词元匹配。
+    """
+    return [t.strip() for t in _FIELD_SPLIT_RE.split(value) if t.strip()]
+
+
+def _min_match_len(value: str) -> int:
+    """该值参与子串匹配所需的最小长度——**按字符类型区分**。
+
+    汉字信息密度高，「订单」「支付」「库存」「退款」这类**双字词**是最常见也最有信息量
+    的单位；统一要求 3 会把它们**全部误杀**（实测本 CMDB 的中文关键词有 33 个是双字的，
+    占绝大多数）。纯 ASCII 值仍要求 3——那是为了挡 `tech="Go"` 这类短值在英文里乱命中。
+    """
+    return _MIN_CJK_MATCH_LEN if _CJK_RE.search(value) else _MIN_TEXT_MATCH_LEN
+
+#: 业务层节点命中后，**下钻得到的候选**的初始置信（§3.4 层级衰减：命中层越细越可信）。
+#: 全表见 ``infer_candidates`` 的档位说明——``high`` 只留给**直接证据**
+#: （症状服务 / 工单 cmdb_ci 指定），业务词命中够不到那一档。
+_LAYER_CONFIDENCE = {
+    "domain": "medium",     # 粒度最细，误召最少
+    "portfolio": "low",
+    "journey": "low",
+    "enterprise": "low",    # 过宽：下钻可能覆盖全量，不足以单独作数（reasons 里有说明）
+}
+
+#: business 层边的「向下」方向：{边类型: (父类型, 子类型)}。
+#: 下钻**必须**按它判定哪端是子级——业务边是无向的，随边乱走会往上跑到父级。
+_BUSINESS_DOWN = {
+    "enterprise_journey": ("enterprise", "journey"),
+    "journey_link": ("journey", "portfolio"),
+    "portfolio_link": ("portfolio", "app"),
+    "domain_link": ("domain", "app"),
+}
 
 _CONFIDENCE_ORDER = ("low", "medium", "high")
 #: 影响面档位。与 confidence **分属两个轴**：前者是"如果有关，影响多大"，
@@ -201,6 +250,83 @@ def _neighborhood(
     return dist
 
 
+def _drill_to_apps(graph: EntityGraph, start: str, max_depth: int = 4) -> set[str]:
+    """从业务层节点沿**向下**的业务边走到 app（§3.4 的「沿图下钻」）。
+
+    这一步是"问题域 → 方案域"的落点：问题描述常常根本不含服务名，但它含**业务词**
+    （「打印结账单没反应」）。命中 journey/portfolio/domain 之后，靠图关系才能落到具体服务。
+    """
+    if graph.nodes[start]["type"] == "app":
+        return {start}
+
+    # 先按声明方向建出"父 → 子"的邻接表（无向边可能两个方向都写了）
+    children: dict[str, set[str]] = {}
+    for edge in graph.edges:
+        pair = _BUSINESS_DOWN.get(edge["type"])
+        if pair is None:
+            continue
+        parent_t, child_t = pair
+        f_type, t_type = graph.nodes[edge["from"]]["type"], graph.nodes[edge["to"]]["type"]
+        if f_type == parent_t and t_type == child_t:
+            children.setdefault(edge["from"], set()).add(edge["to"])
+        elif f_type == child_t and t_type == parent_t:
+            children.setdefault(edge["to"], set()).add(edge["from"])
+
+    out: set[str] = set()
+    seen = {start}
+    queue: deque[tuple[str, int]] = deque([(start, 0)])
+    while queue:
+        cur, depth = queue.popleft()
+        if depth >= max_depth:
+            continue
+        for nb in children.get(cur, ()):
+            if nb in seen:
+                continue
+            seen.add(nb)
+            if graph.nodes[nb]["type"] == "app":
+                out.add(nb)
+            queue.append((nb, depth + 1))
+    return out
+
+
+def _match_node(node: dict, haystack: str) -> tuple[list[str], bool]:
+    """一个节点对问题描述的命中项（子串包含，**不分词、不做语义**）。
+
+    返回 ``(命中项, 是否识别性命中)``。这个区分决定了置信度——**两种命中的证据强度
+    差一档**：
+
+    - **识别性命中**：命中 ``keywords`` 或节点自己的 ``name``。这两个都是"**说明它是谁**"
+      的词（`订单`、`order-service`）。
+    - **非识别性命中**：只命中 ``owner`` / ``namespace`` / ``tech``。这些是**共享属性**
+      ——6 个服务都跑 Java、3 个都在 order namespace。"命中"只说明它在这个集合里，
+      不说明它与故障有关，所以证据弱一档（见 ``infer_candidates`` 里给 low 的分支）。
+
+    ⚠️ 服务名取自 ``node["name"]``，**不是** ``attributes["name"]``——后者根本不存在。
+    早先的实现读 attributes，导致**按服务名匹配从未生效过**。
+    """
+    matched: list[str] = []
+    for kw in node.get("keywords", []):
+        if len(kw) >= _min_match_len(kw) and kw.lower() in haystack:
+            matched.append(f"keywords:{kw}")
+    if node["type"] != "app":
+        return matched, bool(matched)
+    name = node["name"]
+    if len(name) >= _min_match_len(name) and name.lower() in haystack:
+        matched.append(f"name={name}")
+    identity = bool(matched)
+    for field in _TEXT_MATCH_FIELDS:
+        value = node["attributes"].get(field) or ""
+        for token in _field_tokens(value):
+            if len(token) >= _min_match_len(token) and token.lower() in haystack:
+                matched.append(f"{field}={token}")
+    return matched, identity
+
+
+def _bump(confidence: str, steps: int = 1) -> str:
+    i = min(_CONFIDENCE_ORDER.index(confidence) + steps, len(_CONFIDENCE_ORDER) - 1)
+    return _CONFIDENCE_ORDER[i]
+
+
 def query_graph(
     graph: EntityGraph,
     *,
@@ -335,9 +461,23 @@ def infer_candidates(
     （``upstream`` 是爆炸半径、``downstream`` 是可能的上游根因，两者都是合法候选，
     但理由不同）。
 
-    **E2 问题文本匹配静态字段（弱兜底）**：对 name / owner / namespace / tech 做**子串**
-    匹配——不做空白分词，中文没有词边界，``"订单服务响应超时".split()`` 只会得到一个
-    没用的整串。命中者置信 low。
+    **E2 分层关键词匹配**：**子串包含**（不做空白分词——中文没有词边界，
+    ``"订单服务响应超时".split()`` 只会得到一个没用的整串），扫**所有节点类型**，
+    不只 app。问题描述常常根本不含服务名（「打印结账单没反应」里一个都没有），
+    但它含**业务词**——命中业务层节点后沿业务边**下钻**到 app（§3.4 的映射）。
+
+    **置信度按证据类型分档**，不是按命中位置：
+
+    | 档 | 来源 |
+    |---|---|
+    | ``high`` | **直接证据**：症状服务（调用方从日志确认）、工单 ``cmdb_ci`` 指定 |
+    | ``medium`` | app 的**识别性命中**（name / keywords）、``domain`` 下钻、拓扑邻居 |
+    | ``low`` | ``portfolio``/``journey``/``enterprise`` 下钻、只命中共享属性 |
+
+    ``high`` 只留给直接证据——业务词命中再准也只是"工单提到了它"，不该与
+    "日志里确认它在报错"同级。
+
+    多条独立路径命中同一 app 会**升一档**（见 E4 交叉验证）。
 
     **E3 标签与 criticality 只影响 ``impact``，不创造候选、也不改 ``confidence``**：
     后者问"它有关的证据有多强"，前者问"如果有关影响多大"。两个轴分开，调用方才能
@@ -355,10 +495,17 @@ def infer_candidates(
         graph.nodes_by_type.get("change")
     )
 
-    def _touch(nid: str, confidence: str, reason: str, distance: int | None) -> None:
+    def _touch(
+        nid: str,
+        confidence: str,
+        reason: str,
+        distance: int | None,
+        source: str | None = None,
+    ) -> None:
         cur = apps.setdefault(
             nid,
-            {"confidence": confidence, "impact": "low", "reasons": [], "distance": distance},
+            {"confidence": confidence, "impact": "low", "reasons": [],
+             "distance": distance, "sources": set()},
         )
         if _CONFIDENCE_ORDER.index(confidence) > _CONFIDENCE_ORDER.index(cur["confidence"]):
             cur["confidence"] = confidence
@@ -366,6 +513,9 @@ def infer_candidates(
             cur["reasons"].append(reason)
         if distance is not None and (cur["distance"] is None or distance < cur["distance"]):
             cur["distance"] = distance
+        if source is not None:
+            # 记录"是哪几条独立证据把它推出来的"——§3.4 的交叉验证素材
+            cur["sources"].add(source)
 
     # ---- E1：症状服务 + 拓扑扩展 ----
     name_to_id = {
@@ -451,21 +601,37 @@ def infer_candidates(
             ns = graph.nodes[nid]["attributes"]["namespace"]
             _touch(nid, "low", f"namespace 命中：{ns}", None)
 
-    # ---- E2：问题文本子串匹配（不做分词）----
+    # ---- E2：分层关键词匹配（子串包含，**不分词、不做语义**）----
+    #
+    # 扫**所有节点类型**，不只 app。这是 §3.4「问题域分层 ↔ 方案域分层」的落点：
+    # 问题描述常常根本不含服务名（「打印结账单没反应」里一个服务名都没有），但它含
+    # **业务词**。命中业务层节点后沿业务边**下钻**到 app，才是完整的映射。
+    #
+    # 命中层的粗细决定初始置信（§3.4 层级衰减）——命中 domain 比命中 enterprise 可信得多，
+    # 因为后者的下钻可能覆盖全量服务，等于没缩。
     text_hits = 0
-    for nid in graph.nodes_by_type.get("app", []):
-        node = graph.nodes[nid]
-        attrs = node["attributes"]
-        for field in _TEXT_MATCH_FIELDS:
-            value = attrs.get(field) or ""
-            # 过短的字段值会在任意文本里误命中：tech="Go" 能匹配 "logs are going crazy"。
-            # 3 是下限——本 CMDB 的合法取值里只有 "Go" 会被它挡掉，其余全 >= 4 字符。
-            if len(value) < _MIN_TEXT_MATCH_LEN:
-                continue
-            if value.lower() in haystack:
-                text_hits += 1
-                _touch(nid, "low", f"问题描述命中 {field}={value}", None)
-                break
+    for nid, node in graph.nodes.items():
+        matched, identity = _match_node(node, haystack)
+        if not matched:
+            continue
+        text_hits += 1
+        shown = "、".join(matched[:3])
+        if node["type"] == "app":
+            # 识别性命中（名字/关键词）→ medium；只命中共享属性（tech/owner/namespace）→ low
+            _touch(
+                nid, "medium" if identity else "low",
+                f"问题描述命中 {shown}", None, source=nid,
+            )
+            continue
+        layer_conf = _LAYER_CONFIDENCE.get(node["type"], "low")
+        note = "（**过宽**，不足以单独作数）" if node["type"] == "enterprise" else ""
+        for app_nid in _drill_to_apps(graph, nid):
+            _touch(
+                app_nid, layer_conf,
+                f"{node['type']}「{node['display_name'] or node['name']}」命中 → 下钻"
+                f"（{shown}）{note}",
+                None, source=nid,
+            )
     if text_hits:
         evidence_used.append("problem_text_match")
 
@@ -494,6 +660,20 @@ def infer_candidates(
         entry["impact"] = impact
         entry["reasons"].extend(notes)
 
+    # ---- E4：交叉验证——**多条独立路径命中同一 app，证据强于单条** ----
+    #
+    # 这是分层映射最大的增益（§3.4）。与 E3 的区别值得说清：
+    # E3（标签/criticality）**不**碰 confidence——那是"重要性"冒充"可能性"；
+    # 这里碰，因为"被 3 条独立证据指向"本来就是**可能性**的正面证据，同一个轴。
+    for entry in apps.values():
+        n_paths = len(entry["sources"])
+        layers = sorted({graph.nodes[s]["type"] for s in entry["sources"]})
+        entry["hit_paths"] = n_paths
+        entry["matched_layers"] = layers
+        if n_paths >= 2:
+            entry["confidence"] = _bump(entry["confidence"])
+            entry["reasons"].append(f"{n_paths} 条独立路径交叉命中（{'、'.join(layers)}）")
+
     # 排序：先证据强度，再影响面，再距离——证据永远优先于重要性
     ranked = sorted(
         apps.items(),
@@ -513,6 +693,8 @@ def infer_candidates(
             "confidence": entry["confidence"],
             "impact": entry["impact"],
             "reasons": entry["reasons"],
+            "hit_paths": entry["hit_paths"],
+            "matched_layers": entry["matched_layers"],
             "distance_from_symptom": entry["distance"],
             "attributes": graph.nodes[nid]["attributes"],
             "tags": graph.nodes[nid]["tags"],

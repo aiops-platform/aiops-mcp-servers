@@ -78,7 +78,7 @@
     },
     "EdgeTypeSpec": {
       "additionalProperties": false,
-      "description": "边类型的声明。**方向性与端点类型在这里声明一次**，不在每条边上重复。",
+      "description": "边类型的声明。**方向性、端点类型与所属层在这里声明一次**，不在每条边上重复。",
       "properties": {
         "attributes": {
           "additionalProperties": {
@@ -113,6 +113,16 @@
           "title": "Label Zh",
           "type": "string"
         },
+        "layer": {
+          "enum": [
+            "business",
+            "runtime",
+            "support",
+            "event"
+          ],
+          "title": "Layer",
+          "type": "string"
+        },
         "origin": {
           "enum": [
             "reference",
@@ -136,7 +146,8 @@
         "directed",
         "from_types",
         "to_types",
-        "origin"
+        "origin",
+        "layer"
       ],
       "title": "EdgeTypeSpec",
       "type": "object"
@@ -191,6 +202,18 @@
           "title": "Attributes",
           "type": "object"
         },
+        "description": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Description"
+        },
         "display_name": {
           "anyOf": [
             {
@@ -206,6 +229,13 @@
         "id": {
           "title": "Id",
           "type": "string"
+        },
+        "keywords": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Keywords",
+          "type": "array"
         },
         "name": {
           "title": "Name",

@@ -60,11 +60,66 @@ def test_unresolved_services_are_reported_not_dropped(graph) -> None:
 # ======================================================================
 # E2：文本匹配（弱兜底）与其局限
 # ======================================================================
-def test_text_match_on_service_name_is_low_confidence(graph) -> None:
+def test_text_match_on_service_name_is_medium_confidence(graph) -> None:
+    """按服务名命中 → medium。
+
+    ⚠️ 这里断言的是 ``name=order-service`` 这个**精确字符串**，不是早先那句
+    ``any("name" in reason)``——后者是个假命题：reason 里的 ``namespace`` 恰好**包含子串**
+    ``name``，所以它在"按服务名匹配其实从没工作过"的情况下也照样通过。
+    """
     r = gq.infer_candidates(graph, problem="order-service 响应超时")
     cand = _by_service(r)["order-service"]
-    assert cand["confidence"] == "low"
-    assert any("name" in reason for reason in cand["reasons"])
+    assert cand["confidence"] == "medium"
+    assert any("name=order-service" in reason for reason in cand["reasons"])
+
+
+def test_chinese_two_char_keyword_matches(graph) -> None:
+    """**回归测试**：中文双字关键词必须能命中。
+
+    早先的 ``_MIN_TEXT_MATCH_LEN = 3`` 是为挡 ``tech="Go"`` 匹配 "going" 加的，
+    却把 CMDB 里 33 个双字中文关键词（订单/支付/库存/价格…）**全部误杀**——
+    中文是双字词密集的语言，3 字符门槛等于把中文匹配整个关掉。
+    """
+    r = gq.infer_candidates(graph, problem="支付超时")
+    assert "payment-service" in {c["service"] for c in r["candidate_apps"]}
+
+
+def test_business_layer_hit_drills_down_to_app(graph) -> None:
+    """命中业务层节点 → 沿业务边**下钻**到 app。
+
+    这是「问题域 → 方案域」的落点：问题描述常常根本不含服务名，
+    「工单打印没反应」里一个服务名都没有。
+    """
+    r = gq.infer_candidates(graph, problem="工单打印没反应")
+    cand = _by_service(r).get("order-service")
+    assert cand is not None
+    assert "domain" in cand["matched_layers"]
+    assert "portfolio" in cand["matched_layers"]
+
+
+def test_cross_validation_bumps_confidence(graph) -> None:
+    """同一 app 被多条独立路径命中 → 升一档，并记进 reasons。
+
+    「工单」同时命中 `portfolio:work-order` 与 `domain:work-order-ops`，两者都下钻到
+    order-service——这是分层映射相对单层匹配最实在的增益。
+    """
+    r = gq.infer_candidates(graph, problem="工单打印没反应")
+    cand = _by_service(r)["order-service"]
+    assert cand["hit_paths"] >= 2
+    assert any("交叉命中" in reason for reason in cand["reasons"])
+
+
+def test_shared_attribute_hit_is_only_low_confidence(graph) -> None:
+    """只命中共享属性（tech）→ low。
+
+    6 个服务都跑 Java、3 个都在 order namespace——"命中"只说明它在这个集合里，
+    不说明它与故障有关。这个区分防止"升级 Java"这类查询把 6 个服务都标成高置信。
+    """
+    r = gq.infer_candidates(graph, problem="升级 Java 版本")
+    cands = _by_service(r)
+    assert "order-service" in cands                       # Java 服务确实都在范围内
+    assert cands["order-service"]["confidence"] == "low"  # 但证据是弱的
+    assert cands["order-service"]["matched_layers"] == ["app"]
 
 
 def test_text_match_on_namespace(graph) -> None:
@@ -78,31 +133,30 @@ def test_short_field_values_do_not_false_positive(graph) -> None:
     assert r["candidate_apps"] == []
 
 
-def test_chinese_problem_text_honestly_misses(graph) -> None:
-    """**记录一个真实局限，而不是把它藏起来**。
+def test_unrelated_text_honestly_misses(graph) -> None:
+    """**完全无关的描述仍要如实返空**——不能为了"有结果"硬凑。
 
-    文本匹配是逐字子串比对，而 owner 是「交易履约」「支付团队」这类组织标签——
-    "订单服务响应超时" 里没有任何一个字段值逐字出现，所以匹配不上。
-    正确做法是调用方先用日志/链路确认症状服务，再走 services 参数。
+    （早先这里用的是 "订单服务响应超时"，断言它匹配不上。那个断言在 matcher 修复后
+    不再成立——中文现在能命中了，见 ``test_chinese_two_char_keyword_matches``。）
     """
-    r = gq.infer_candidates(graph, problem="订单服务响应超时")
+    r = gq.infer_candidates(graph, problem="zzzz qqqq 完全无关的描述")
     assert r["candidate_apps"] == []
-    assert "没命中不等于无关" in r["coverage_note"]
+    assert "请勿编造服务名" in r["coverage_note"]
 
 
 # ======================================================================
 # E3：影响面是**独立**的一轴
 # ======================================================================
 def test_impact_is_independent_of_confidence(graph) -> None:
-    """order-service 文本命中（证据弱）但带 tier1 且 critical（影响大）。
+    """order-service 靠文本命中（medium）但带 tier1 且 critical（impact=high）。
 
     两轴分开正是为了不让"重要"冒充"可能"——若把 tier1 折进 confidence，
-    这个候选会看起来和症状服务一样可信。
+    这个候选会看起来和症状服务（high）一样可信。
     """
     r = gq.infer_candidates(graph, problem="order-service 响应超时")
     cand = _by_service(r)["order-service"]
-    assert cand["confidence"] == "low"
-    assert cand["impact"] == "high"
+    assert cand["confidence"] == "medium"    # 文本命中，够不到 high
+    assert cand["impact"] == "high"          # 但影响面确实大
 
 
 def test_impact_does_not_create_candidates(graph) -> None:

@@ -74,6 +74,41 @@
 
 ### Changed
 
+- **aiops-datasource-mcp-server**：本体修订（design-v5.7 §7.1）+ 关键词匹配修复
+  - **节点类型（净 12 类）**：删 `cross_journey_hub`；新增 **`domain`**（业务细域）——
+    比 `portfolio` 更细，但**与它平行、各自直连 app**（不做 portfolio→domain 层级）。
+    收益是**两条独立召回路径**：同一 app 被 portfolio 与 domain 分别命中即可交叉验证
+  - **边类型（11 → 13）**：删 `cross_journey_link`；新增 `enterprise_journey` / `domain_link` /
+    `app_codebase`（**原节点字段 `refs.repo_ref` 提升为边**，`repo_by_app` 派生索引保持同形，
+    故 `locate_repo` 契约不变）；**每类边必须声明 `layer`**
+  - **分层约束（enforced）**：`business` 层**禁止 app—app 边**——在 **ontology 声明层**强制，
+    声明成 app—app 的边类型根本无法通过加载。`calls`（app→app）归 **runtime 层**，
+    语义是观测到的运行时依赖，不是业务归属；删它会让 `get_service_topology` 失去数据源
+  - **`app.attributes`** 加 `kind`（`application` / `environment`，必填）——App 节点兼表示
+    应用与**其所在云环境**；加可选 `business_role`
+  - **删除 6 个由 `namespace` 派生的 Portfolio**（`order`/`common`/…）——`namespace` 是
+    k8s 部署分组，不是业务领域，`common` 更是装着两个 owner 完全不同的服务。
+    **它们没有改名沿用**：那会把部署分组的语义残留带进业务分类
+  - **节点补 `description` / `keywords`**（信封层，所有类型共有）：`description` 给 LLM 读；
+    `keywords` 是**开放**自由词供文本召回，与**封闭**的 `tags`（4 个横切业务标签）职责分明——
+    分开是为了保住 tags 的封闭性（挡派生指标混进静态文件）。校验：空串 / 重复项 /
+    与 `tags` 重名均被拒
+  - **`infer_candidate_services` 改为分层匹配**：扫**所有节点类型**（原只扫 app），
+    业务层命中后沿业务边**下钻**到 app；多路径命**升一档**（交叉验证）；
+    置信度按**证据类型**分档（`high` 只留给直接证据：症状服务 / 工单 `cmdb_ci` 指定）
+  - **修掉 5 个"看起来在工作、实际没工作"的匹配缺陷**：
+    ① `attrs.get("name")` 永远为空 → **按服务名匹配从未生效过**（名字在 `node["name"]`）；
+    ② 匹配器不读 `keywords`，新字段是死数据；
+    ③ 只扫 app 节点 → 业务层节点不可能被命中；
+    ④ `_MIN_TEXT_MATCH_LEN = 3` 为挡 `tech="Go"` 而设，却**把 33 个双字中文关键词全杀**
+    （中文是双字词密集的语言）——改为按字符类型区分：含 CJK 只需 2 字符，纯 ASCII 仍要 3；
+    ⑤ 字段值**整串**匹配 → `"Java / Spring Boot"` 永远匹配不上「升级 Java 版本」，
+    改为按 `/ , ; 、` 切**词元**
+  - 其中缺陷 ① 长期被一个**假命题测试**掩盖：`assert any("name" in reason)` 之所以通过，
+    是因为 reason 里的 `namespace` **恰好包含子串** `name`。已改为断言精确的
+    `name=order-service`
+  - ⚠️ **`keywords` 是派生的，不含真实用户用语**——「结账卡住」「打印结账单没反应」这类
+    业务描述仍会漏召。真实召回能力要靠真实工单里的说法补齐（已登记在 `metadata.derived_rules`）
 - **aiops-datasource-mcp-server**：`backends/cmdb.py` 的数据源由模块内字面量改为实体图谱文件
   - 删除 `_SERVICES` / `_DEPENDS_ON`（10 服务 / 13 条边），改读
     `EntityGraph` 上**同形的派生索引**（`services` / `depends_on` / `repo_by_app`）；

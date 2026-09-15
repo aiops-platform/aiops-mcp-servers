@@ -95,11 +95,24 @@ EXPECTED_DEPENDS_ON: dict[str, list[tuple[str, str]]] = {
 # 迁移无损
 # ----------------------------------------------------------------------
 def test_services_match_legacy_literal(clear_settings_cache) -> None:
-    """10 个服务的全部 7 个字段（6 属性 + repo）逐字一致。"""
+    """10 个服务的**历史** 7 个字段（6 属性 + repo）逐字一致。
+
+    v5.7 给 app 加了 `kind`（与可选的 `business_role`），所以用**子集比对**而不是全等：
+    迁移的回归价值在于"历史字段一个都没变、一个都没少"，而不在于"没有新增字段"。
+    用全等会让每次合理的 schema 演进都触发假失败，最终逼人把这条测试删掉。
+    """
     graph = eg.get_graph()
     assert set(graph.services) == set(EXPECTED_SERVICES)
     for name, expected in EXPECTED_SERVICES.items():
-        assert graph.services[name] == expected, f"{name} 与历史字面量不一致"
+        for key, val in expected.items():
+            assert graph.services[name][key] == val, f"{name}.{key} 与历史字面量不一致"
+
+
+def test_every_app_declares_kind(clear_settings_cache) -> None:
+    """v5.7 新增：每个 app 必须声明 kind，用于区分「应用」与「云环境」。"""
+    graph = eg.get_graph()
+    for name, entry in graph.services.items():
+        assert entry["kind"] in {"application", "environment"}, name
 
 
 def test_depends_on_matches_legacy_literal(clear_settings_cache) -> None:

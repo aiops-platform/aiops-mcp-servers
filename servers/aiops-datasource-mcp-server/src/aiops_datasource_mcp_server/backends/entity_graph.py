@@ -69,7 +69,7 @@ class NodeTypeSpec(BaseModel):
 
 
 class EdgeTypeSpec(BaseModel):
-    """边类型的声明。**方向性与端点类型在这里声明一次**，不在每条边上重复。"""
+    """边类型的声明。**方向性、端点类型与所属层在这里声明一次**，不在每条边上重复。"""
 
     model_config = ConfigDict(extra="forbid")
     key: str
@@ -81,6 +81,13 @@ class EdgeTypeSpec(BaseModel):
     #: 该边类型允许的属性词表：{属性名: 允许值}。空 dict = 不允许多余属性。
     attributes: dict[str, list[str]] = Field(default_factory=dict)
     origin: Literal["reference", "local"]
+    #: 所属层。**business 层内禁止 app—app 边**（见 build_graph 的分层约束）——
+    #: 这是「app 与 app 之间不能直接关联，要通过业务域」这条规则的强制点。
+    #:   business —— 业务归属（enterprise → journey → portfolio/domain → app）
+    #:   runtime  —— 观测到的运行时依赖事实（calls），**不是业务归属**
+    #:   support  —— 支撑关系（codebase / team / wiki / agent / tool）
+    #:   event    —— 事件落点（incident / change）
+    layer: Literal["business", "runtime", "support", "event"]
 
 
 class KeyAttributeSpec(BaseModel):
@@ -116,23 +123,56 @@ class Ontology(BaseModel):
 
 
 class AppAttributes(BaseModel):
-    """App 节点的属性（逐字段迁移自历史 ``_SERVICES``）。
+    """App 节点的属性（前 6 个逐字段迁移自历史 ``_SERVICES``，``kind`` 为 v5.7 新增）。
 
     ``tier`` 是**拓扑层**（edge/core/support），与静态标签 ``tier1``（一级系统）是
     两个不同概念——名字像，含义无关。
+
+    ``kind`` 区分「应用」与「云环境」：按 v5.7 的约定，App 节点既表示具体实现某个业务域的
+    应用/服务，**也表示它所在的云环境**（如 ``azure-cn-north3``）。判断相关性时能据此
+    排除环境节点——工单问的通常是服务，不是机房。
+
+    ``business_role`` 可选：一句话说明这个应用承担什么业务职能，供 LLM 判断时参考。
     """
 
     model_config = ConfigDict(extra="forbid")
+    kind: Literal["application", "environment"]
     namespace: str
     owner: str
     tier: Literal["edge", "core", "support"]
     tech: str
     runtime: str
     criticality: Literal["critical", "high", "medium", "low"]
+    business_role: str | None = None
+
+
+class BusinessDomainAttributes(BaseModel):
+    """业务层节点（enterprise / journey / portfolio / domain）**特有的**属性。
+
+    描述与检索词在**信封层**（``description`` / ``keywords``），所有节点类型共有——
+    不在这里重复定义。这里只放业务层独有的概念。
+
+    全部字段可选——**业务语义层当前是空置的**（见实体文件的 ``derived_rules``），
+    这些字段是给将来的构建界面 / 人工录入填的。**schema 先定死，数据留空**。
+
+    ⚠️ **业务层的 ``keywords`` 该怎么写**：不由"这个业务域是什么"决定，而由
+    **"用户会怎么描述它出问题"**决定。写「售后服务选择」是业务视角、不会有人这么说；
+    写「退货」「换货」「申请售后没反应」才是问题视角——只有后者能被工单命中。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    #: 业务能力名（Journey 层用，如参考站的 "Engage"）。
+    capability: str | None = None
 
 
 #: 按节点类型标注属性模型。未登记的类型属性开放（留给将来的界面自由扩展）。
-NODE_ATTR_MODELS: dict[str, type[BaseModel]] = {"app": AppAttributes}
+NODE_ATTR_MODELS: dict[str, type[BaseModel]] = {
+    "app": AppAttributes,
+    "enterprise": BusinessDomainAttributes,
+    "journey": BusinessDomainAttributes,
+    "portfolio": BusinessDomainAttributes,
+    "domain": BusinessDomainAttributes,
+}
 
 
 class Node(BaseModel):
@@ -141,10 +181,23 @@ class Node(BaseModel):
     type: str
     name: str
     display_name: str | None = None
+    #: 一句话说明**这个节点是干什么的**。所有节点类型共有（与 ``display_name`` 同类），
+    #: 放在信封层而不是各类型的 attributes 里——避免每个类型各定义一个同名同义的字段。
+    #: 主要给 LLM 判断相关性用。
+    description: str | None = None
     attributes: dict[str, Any] = Field(default_factory=dict)
+    #: **封闭**词表：只能取 ``ontology.key_attributes`` 里声明的横切业务标签
+    #: （Tier 1 / Holiday-critical …）。**大多数节点天然没有标签是对的**——横切业务
+    #: 标签本来就只有少数系统够得上。想放任意关键词请用 ``keywords``。
     tags: list[str] = Field(default_factory=list)
-    #: 类型化指针（如 ``repo_ref`` → ``codebase:xxx``）。**不是边**——参考 ontology 的
-    #: 10 类边里没有 App→Codebase 关系，用引用字段表达，将来若确认是边再提升。
+    #: **开放**的自由关键词，供关键词召回命中。与 ``tags`` 职责分明：
+    #:   tags     —— 封闭的横切业务标签，有语义、可枚举、能被筛选器穷举
+    #:   keywords —— 开放的自由词，只为"能被问题描述命中"，不承载语义
+    #: 分开是为了保住 tags 的封闭性——当初设封闭正是为了挡住派生指标
+    #: （Top 10 by incidents 那几个带时间窗口的）混进静态文件。
+    keywords: list[str] = Field(default_factory=list)
+    #: 类型化指针。**当前全部为空**——原先唯一的用途（``repo_ref`` → Codebase）
+    #: 已于 v5.7 提升为 ``app_codebase`` 边。
     refs: dict[str, str] = Field(default_factory=dict)
     notes: str | None = None
 
@@ -422,6 +475,29 @@ def build_graph(
             {"path": path, "keys": sorted(overlap)},
         )
 
+    # ---- ontology 自洽：business 层禁止 app—app 边 ----
+    #
+    # 这条是「app 与 app 之间不能直接关联，要通过业务域」的**强制点**。
+    # 放在**声明层**而不是逐边检查：一旦某个 business 边类型被声明成 app—app，
+    # 任何数据都必然违规——与其等坏数据进来再报错，不如让这种声明根本无法通过。
+    #
+    # 注意这不阻止 app—app 的**运行时依赖**：`calls` 归 runtime 层，语义是观测到的
+    # 调用事实，不是业务归属。删掉它会让 get_service_topology（爆炸半径/根因）失去
+    # 数据源，所以用分层把两件事分开，而不是一刀切禁掉。
+    for edge_spec in onto.edge_types:
+        if (
+            edge_spec.layer == "business"
+            and "app" in edge_spec.from_types
+            and "app" in edge_spec.to_types
+        ):
+            raise GraphLoadError(
+                f"ontology 声明了 business 层的 app—app 边 {edge_spec.key!r}——"
+                f"这违反「app 之间不能直接关联，要通过业务域（portfolio / domain）」。"
+                f"若确有同级直连需求，请把它归入 runtime 层（参照 calls 的语义："
+                f"观测到的运行时依赖，不是业务归属）。",
+                {"path": path, "edge_type": edge_spec.key},
+            )
+
     # ---- 节点类型齐全 ----
     if require_all_node_types:
         missing = type_key_set - set(doc.nodes)
@@ -500,6 +576,31 @@ def build_graph(
                         f"合法静态标签：{sorted(key_attr_keys)}",
                         {"path": path, "node_id": node.id, "tag": tag},
                     )
+
+            # keywords 是**开放**词表（不像 tags 有枚举），但空串与重复项仍要挡：
+            # 它们只会稀释召回，不会带来任何信息。
+            blanks = [k for k in node.keywords if not k.strip()]
+            if blanks:
+                raise GraphLoadError(
+                    f"{node.id}.keywords 含空串（{len(blanks)} 个）——空串能匹配任何文本，"
+                    f"会把该节点灌进所有查询结果",
+                    {"path": path, "node_id": node.id},
+                )
+            if len(set(node.keywords)) != len(node.keywords):
+                dupes = sorted({k for k in node.keywords if node.keywords.count(k) > 1})
+                raise GraphLoadError(
+                    f"{node.id}.keywords 有重复项：{dupes}",
+                    {"path": path, "node_id": node.id, "duplicates": dupes},
+                )
+            # 同一个词不该既在封闭标签又在开放关键词里——职责混淆会让"该按标签筛还是
+            # 按关键词搜"变得说不清。发现即报，让人明确选一边。
+            both = sorted(set(node.keywords) & key_attr_keys)
+            if both:
+                raise GraphLoadError(
+                    f"{node.id} 的 keywords 与其封闭标签重名：{both}——"
+                    f"请二选一：要能被筛选器穷举就放 tags，只为被文本命中才放 keywords",
+                    {"path": path, "node_id": node.id, "overlap": both},
+                )
 
             raw = node.model_dump()
             nodes[node.id] = raw
@@ -602,19 +703,30 @@ def _derive_indexes(
     nodes_by_type: dict[str, list[str]],
     edges: list[dict],
 ) -> tuple[dict[str, dict], dict[str, list[tuple[str, str]]], dict[str, str]]:
-    """派生 (services, depends_on, repo_by_app)——与历史 ``_SERVICES`` / ``_DEPENDS_ON`` 同形。"""
+    """派生 (services, depends_on, repo_by_app)——与历史 ``_SERVICES`` / ``_DEPENDS_ON`` 同形。
+
+    ``repo`` 自 v5.7 起由 **`app_codebase` 边**派生（原节点字段 ``refs.repo_ref`` 已提升为边）。
+    对外仍表现为 ``services[name]["repo"]``，故 ``locate_repo`` 的契约不变。
+    """
+    # 先收集 app → codebase 的映射（方向不敏感：无向边两个方向都可能写）
     repo_by_app: dict[str, str] = {}
+    for edge in edges:
+        if edge["type"] != "app_codebase":
+            continue
+        a, b = edge["from"], edge["to"]
+        if nodes[a]["type"] == "app" and nodes[b]["type"] == "codebase":
+            repo_by_app[nodes[a]["name"]] = nodes[b]["name"]
+        elif nodes[b]["type"] == "app" and nodes[a]["type"] == "codebase":
+            repo_by_app[nodes[b]["name"]] = nodes[a]["name"]
+
     services: dict[str, dict] = {}
     depends_on: dict[str, list[tuple[str, str]]] = {}
 
-    # 先按**节点出现顺序**建立 app 索引——保持与历史一致的迭代顺序
+    # 按**节点出现顺序**建立 app 索引——保持与历史一致的迭代顺序
     for nid in nodes_by_type.get("app", []):
         node = nodes[nid]
         name = node["name"]
-        repo_ref = node["refs"].get("repo_ref", "")
-        repo = repo_ref.split(":", 1)[1] if ":" in repo_ref else repo_ref
-        repo_by_app[name] = repo
-        services[name] = {**node["attributes"], "repo": repo}
+        services[name] = {**node["attributes"], "repo": repo_by_app.get(name, "")}
         depends_on[name] = []
 
     for edge in edges:
