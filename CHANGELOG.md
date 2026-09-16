@@ -33,6 +33,20 @@
     `repo_by_app` 是 1:1 的 dict，多条边会让**后出现的那条静默胜出**、结果只取决于
     边在文件里的顺序；`locate_repo` 指错仓库比找不到仓库危害大。见 docs §7 第 12 条
 
+### Added
+
+- **`infer_candidate_services` 业务域消歧**（`aiops-datasource-mcp-server`）
+  - 每个候选新增 `business_paths`（enterprise / journey / portfolio / domain 路径，
+    四层键恒在）；返回体新增 `matched_domains`（输入命中到的业务域）、
+    每个候选的 `in_domain`、以及跨域同分时的 `ambiguous` 标记
+  - 起因：同名应用跨业务域时输出无法区分。实测 `VLMS` 同时属于 Work Order /
+    Handover / Workshop（分属两个 journey），对「VLMS 打不开」返回的三个候选
+    **同分、同层、reasons 一字不差**——调用方只能看名字后缀猜
+  - 域内/域外**只用于排序与标注，不制造也不丢弃候选**：业务域可能录错
+    （实测 `order-service` 桥接在 work-order，而「报价单」业务上属 offer-order），
+    丢掉域外候选会让"域录错"表现为"服务找不到"
+  - `in_domain: null`（无域线索）与 `false`（确实不在域内）**语义不同**，刻意分开
+
 ### Fixed
 
 - **`locate_repo` 不再为没有仓库的服务编造 URL**：`_repo_url` 原有 `or service` 兜底，

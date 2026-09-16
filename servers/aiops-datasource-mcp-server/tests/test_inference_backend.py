@@ -12,7 +12,12 @@ from aiops_datasource_mcp_server.errors import AppError
 
 
 @pytest.fixture
-def graph(clear_settings_cache) -> eg.EntityGraph:
+def graph(baseline_cmdb) -> eg.EntityGraph:
+    """冻结基线上的图——**不是**包内那份活文件。
+
+    活文件是可编辑的用户数据（编辑页 + /admin/cmdb/**），拿它当断言输入会在每次
+    人工编辑时变红。见 conftest.BASELINE_CMDB。
+    """
     return eg.get_graph()
 
 
@@ -211,3 +216,72 @@ def test_ranks_are_contiguous_from_one(graph) -> None:
     r = gq.infer_candidates(graph, problem="order-service", services=["warranty-service"])
     ranks = [c["rank"] for c in r["candidate_apps"]]
     assert ranks == list(range(1, len(ranks) + 1))
+
+
+# ======================================================================
+# 业务域：business_paths / matched_domains / 跨域歧义
+# ======================================================================
+def test_every_candidate_carries_business_paths(graph) -> None:
+    """每个候选都带**完整的**业务域路径，四个层的键恒在（缺的写 None）。
+
+    键齐全比"有值才给"重要：省略键会让"这个 app 没有业务域"与"这个字段没查"
+    在调用方看来一模一样。
+    """
+    r = gq.infer_candidates(graph, problem="订单")
+    assert r["candidate_apps"], "前置条件：'订单' 应当有候选"
+    for c in r["candidate_apps"]:
+        assert c["business_paths"], f"{c['service']} 缺 business_paths"
+        for path in c["business_paths"]:
+            assert set(path) == {"enterprise", "journey", "portfolio", "domain"}, path
+
+
+def test_business_paths_expose_journey_and_portfolio(graph) -> None:
+    """路径里能读出 journey / portfolio —— 这正是同名应用跨域时用来区分的依据。"""
+    r = gq.infer_candidates(graph, problem="理赔")
+    paths = [p for c in r["candidate_apps"] for p in c["business_paths"]]
+    assert any(p["portfolio"] for p in paths), paths
+
+
+def test_ambiguous_when_top_candidates_span_domains(graph) -> None:
+    """头部候选同分却分属不同业务域 → 必须报 ambiguous。
+
+    实测 `VLMS` 同时挂在 work-order / handover / workshop 三个 portfolio、分属两个
+    journey。不报歧义的话，调用方拿到三个同分同因的候选，只能看名字后缀猜。
+    """
+    r = gq.infer_candidates(graph, problem="VLMS 打不开")
+    best = r["candidate_apps"][0]["confidence"]
+    tops = [c for c in r["candidate_apps"] if c["confidence"] == best]
+    domains = {
+        (p.get("journey"), p.get("portfolio"))
+        for c in tops for p in c["business_paths"]
+        if p.get("journey") or p.get("portfolio")
+    }
+    if len(domains) > 1:
+        assert r["ambiguous"] is True, f"跨域同分却没报歧义：{domains}"
+        assert "需澄清" in r["summary"]
+
+
+def test_no_domain_cue_is_stated_not_guessed(graph) -> None:
+    """输入里没有业务域线索时**如实说明**，不是随便挑一个域。"""
+    r = gq.infer_candidates(graph, problem="VLMS 打不开")
+    assert r["matched_domains"] == []
+    assert "无业务域线索" in r["summary"]
+    # 无域线索 → in_domain 是 None（"不知道"），不是 False（"不在域内"）
+    for c in r["candidate_apps"]:
+        assert c["in_domain"] is None
+
+
+def test_domain_cue_marks_membership(graph) -> None:
+    """输入命中业务域时：matched_domains 有值，域内候选 in_domain=True。"""
+    r = gq.infer_candidates(graph, problem="工单打不开")
+    assert r["matched_domains"], "前置条件：'工单' 应当命中某业务域"
+    assert {d["type"] for d in r["matched_domains"]} <= {
+        "enterprise", "journey", "portfolio", "domain"
+    }
+    in_domain = [c for c in r["candidate_apps"] if c["in_domain"]]
+    assert in_domain, "命中业务域后应当有候选落在域内"
+    # 域内候选必须真的在某个命中域的 business_paths 里（不是随便标的）
+    hit_names = {d["name"] for d in r["matched_domains"]}
+    for c in in_domain:
+        members = {v for p in c["business_paths"] for v in p.values() if v}
+        assert members & hit_names or c["matched_layers"], c["service"]

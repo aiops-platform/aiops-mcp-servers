@@ -80,6 +80,67 @@ _BUSINESS_DOWN = {
     "domain_link": ("domain", "app"),
 }
 
+#: 业务层的四个层级，由粗到细。``business_paths`` 用它保证每条路径的键齐全
+#: （缺的写 None，而不是省略键——省略会让"这个 app 没有业务域"与"没查"看起来一样）。
+_BUSINESS_LAYERS = ("enterprise", "journey", "portfolio", "domain")
+
+
+def _business_paths(graph: EntityGraph, app_id: str) -> list[dict]:
+    """app → 它所属的**业务域路径**（enterprise → journey → portfolio，或 domain）。
+
+    ## 为什么必须有这个字段
+
+    同一个产品名可以出现在多个业务域下。实测本 CMDB：
+
+        VLMS ×3 → handover（销售旅程） / work-order / workshop（服务旅程）
+        DCP  ×3 → handover / offer-order / parts
+        Xentry ×3 → parts / work-order / workshop
+
+    对 ``"VLMS 打不开"``，``infer_candidates`` 返回 3 个候选，**同分、同层、
+    reason 一字不差**（都是"问题描述命中 keywords:VLMS"）。调用方只能看名字后缀猜。
+    把业务域路径放进输出，歧义才是**可见**的——这是能消歧的前提。
+
+    ## 为什么返回列表
+
+    ``portfolio_link`` / ``domain_link`` 都没有 1:1 约束，一个 app 可以同属多个业务域；
+    而且 ``domain`` 是 ``portfolio`` 的**平行层**（见 ontology），所以一个 app 天生可能
+    有两条路径：``…→ portfolio → journey → enterprise`` 与 ``domain``。
+    当前数据恰好各一条，但把这条写死会在将来变成一句谎话。
+    """
+    def _parents(nid: str) -> list[str]:
+        """该节点的**上级**业务节点（按声明方向判定，业务边是无向的）。"""
+        out = []
+        for edge in graph.edges:
+            pair = _BUSINESS_DOWN.get(edge["type"])
+            if pair is None:
+                continue
+            parent_t, child_t = pair
+            ft, tt = graph.nodes[edge["from"]]["type"], graph.nodes[edge["to"]]["type"]
+            if ft == child_t and tt == parent_t and edge["from"] == nid:
+                out.append(edge["to"])
+            elif tt == child_t and ft == parent_t and edge["to"] == nid:
+                out.append(edge["from"])
+        return sorted(out)
+
+    found: list[dict] = []
+
+    def _walk(nid: str, acc: dict) -> None:
+        ups = _parents(nid)
+        if not ups:
+            found.append(acc)
+            return
+        for up in ups:
+            node = graph.nodes[up]
+            _walk(up, {**acc, node["type"]: node["display_name"] or node["name"]})
+
+    _walk(app_id, {})
+
+    if not found:
+        found = [{}]
+    # 键齐全：缺的写 None，调用方不用判"键在不在"
+    return [{k: p.get(k) for k in _BUSINESS_LAYERS} for p in found]
+
+
 _CONFIDENCE_ORDER = ("low", "medium", "high")
 #: 影响面档位。与 confidence **分属两个轴**：前者是"如果有关，影响多大"，
 #: 后者是"它有关的证据有多强"。排序时 confidence 优先于 impact。
@@ -489,6 +550,10 @@ def infer_candidates(
     haystack = problem.lower()
     deg = _degrees(graph)
     apps: dict[str, dict] = {}   # node_id → {confidence, reasons, distance}
+    #: 输入**指向了哪些业务域**：{业务节点 id: (节点, 该域子树下的 app 集合)}。
+    #: 与 `apps` 分开记——前者是"问题属于哪个域"这个判断本身，后者是它的后果。
+    #: 调用方需要看到前者：候选跨域同分时，域信息才是消歧的依据。
+    domain_cues: dict[str, tuple[dict, set[str]]] = {}
     evidence_used: list[str] = []
     unresolved: list[str] = []
     have_incident_data = bool(graph.nodes_by_type.get("incident")) or bool(
@@ -625,7 +690,10 @@ def infer_candidates(
             continue
         layer_conf = _LAYER_CONFIDENCE.get(node["type"], "low")
         note = "（**过宽**，不足以单独作数）" if node["type"] == "enterprise" else ""
-        for app_nid in _drill_to_apps(graph, nid):
+        # 同一个域只下钻一次：既要计数，又要拿去标记"哪些候选在域内"
+        drilled = _drill_to_apps(graph, nid)
+        domain_cues[nid] = (node, drilled)
+        for app_nid in drilled:
             _touch(
                 app_nid, layer_conf,
                 f"{node['type']}「{node['display_name'] or node['name']}」命中 → 下钻"
@@ -634,6 +702,18 @@ def infer_candidates(
             )
     if text_hits:
         evidence_used.append("problem_text_match")
+
+    # ---- E2b：域内 / 域外 ——「先定域，再定服务」的落点 ----
+    #
+    # 输入命中了某个业务域之后，**落在该域子树里的候选，证据强于域外的**：
+    # 前者是"问题描述指向了这个域，它在这个域里"（两条独立线索），后者只有文本这一条。
+    #
+    # ⚠️ 只用在排序/标注上，**不制造候选**——域外候选照样保留。
+    # 原因：业务域可能录错（实测 `order-service` 被桥接在 work-order，而「报价单」
+    # 业务上属 offer-order）。把域外候选直接丢掉，会让"域录错了"表现为"服务找不到"。
+    apps_in_domain: set[str] = set()
+    for _node, drilled in domain_cues.values():
+        apps_in_domain |= drilled
 
     # ---- E3：标签 / criticality → **独立的影响面轴**，不并进 confidence ----
     #
@@ -699,6 +779,10 @@ def infer_candidates(
             "attributes": graph.nodes[nid]["attributes"],
             "tags": graph.nodes[nid]["tags"],
             "degree": deg.get(nid, 0),
+            # 业务域路径（①）：同名应用跨域时，这是**唯一**能区分候选的依据
+            "business_paths": _business_paths(graph, nid),
+            # 落在输入命中的业务域内？（②）
+            "in_domain": nid in apps_in_domain if domain_cues else None,
         }
         for i, (nid, entry) in enumerate(ranked, start=1)
     ]
@@ -722,17 +806,56 @@ def infer_candidates(
     )
     coverage = "".join(parts)
 
+    # ---- 输入指向了哪些业务域（②）----
+    # 空列表 = **输入里没有任何业务域线索**。这不是"错"，但它意味着：
+    # 若候选跨多个域且同分，调用方没有任何依据选——应当去澄清，而不是猜一个。
+    matched_domains = [
+        {
+            "id": nid,
+            "type": node["type"],
+            "name": node["name"],
+            "display_name": node["display_name"],
+            "app_count": len(drilled),
+        }
+        for nid, (node, drilled) in sorted(domain_cues.items())
+    ]
+
+    # ---- 跨域歧义（只报，不判）----
+    # 头部候选同分、却分属不同 business_path → 说出来。调用方（scope / 用户）
+    # 才知道要澄清什么，而不是在三选一里静默挑第一个。
+    ambiguous = False
+    if len(candidates) > 1:
+        top_conf = candidates[0]["confidence"]
+        same = [c for c in candidates if c["confidence"] == top_conf]
+        def _key(c):
+            return tuple(sorted(
+                (p.get("journey") or "", p.get("portfolio") or "", p.get("domain") or "")
+                for p in c["business_paths"]
+            ))
+        if len({_key(c) for c in same}) > 1:
+            ambiguous = True
+
     return {
         "problem": problem,
         "incident_data_available": have_incident_data,
         "degraded": degraded,
         "evidence_used": evidence_used,
         "unresolved_services": unresolved,
+        "matched_domains": matched_domains,
+        "ambiguous": ambiguous,
         "candidate_apps": candidates,
         "coverage_note": coverage,
         "summary": (
             f"候选 {len(candidates)} 个"
             + (f"（另有 {len(unresolved)} 个服务名未收录）" if unresolved else "")
+            + (
+                "；输入命中的业务域：" + "、".join(
+                    f"{d['type']}「{d['display_name'] or d['name']}」" for d in matched_domains
+                )
+                if matched_domains
+                else "；**输入中无业务域线索**"
+            )
+            + ("；**头部候选跨业务域同分，需澄清**" if ambiguous else "")
             + ("；无事件数据，已降级" if degraded else "")
         ),
     }

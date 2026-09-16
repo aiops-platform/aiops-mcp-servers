@@ -429,7 +429,9 @@
         "keywords": [
           "Sales Customer Journey",
           "sales customer journey",
-          "salescustomerjourney"
+          "salescustomerjourney",
+          "销售",
+          "销售业务"
         ],
         "refs": {},
         "notes": "源：otr.json snapshot.journeys[journey:1]"
@@ -447,7 +449,15 @@
         "keywords": [
           "Customer Server Journey",
           "customer server journey",
-          "customerserverjourney"
+          "customerserverjourney",
+          "售后",
+          "售后业务",
+          "车间",
+          "车间管理",
+          "保养",
+          "理赔",
+          "配件销售",
+          "结账"
         ],
         "refs": {},
         "notes": "源：otr.json snapshot.journeys[journey:2]"
@@ -2093,7 +2103,12 @@
           "order",
           "订单",
           "下单",
-          "交易履约"
+          "报价",
+          "生成报价单",
+          "预检",
+          "damagecode",
+          "工单",
+          "施工单"
         ]
       },
       {

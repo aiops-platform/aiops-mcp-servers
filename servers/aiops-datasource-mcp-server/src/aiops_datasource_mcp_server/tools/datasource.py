@@ -363,6 +363,15 @@ def _build_infer_candidate_services():
         每个候选都带**非空的 reasons**（必须能追溯到具体事实）与置信档位
         （`high` / `medium` / `low`，**不给浮点分**——那会暗示一个不存在的校准模型）。
 
+        **业务域消歧**：同名应用可能挂在多个业务域下（实测 `VLMS` 同时属于
+        Work Order / Handover / Workshop）。每个候选带 `business_paths`
+        （enterprise / journey / portfolio / domain 路径）；返回体另有 `matched_domains`
+        （**输入文本命中到的业务域**，空列表 = 输入里没有域线索）与每个候选的 `in_domain`
+        （`null` 表示无域线索，**不等于**"不在域内"）。
+
+        头部候选**同分却分属不同业务域**时 `ambiguous=true`、summary 里点明——
+        **此时不要替调用方挑一个**，应澄清属于哪个业务域（design-v5.7 §3.6）。
+
         本 CMDB 目前没有 Incident / Change 记录，故 `degraded=true`、未走「事件 → 应用」
         路径。**未命中任何服务时请勿编造服务名**，请改用日志 / 链路确认症状服务后重试。
         """

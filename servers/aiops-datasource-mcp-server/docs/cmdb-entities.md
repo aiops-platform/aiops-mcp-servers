@@ -527,3 +527,44 @@ cp /tmp/base.json servers/aiops-datasource-mcp-server/tests/fixtures/cmdb-migrat
 
 > ⚠️ 别把基线改成指向包内活文件——那等于把"可编辑"这个前提撤销掉。
 > 也别因为活文件变了就改基线：活文件本来就该变。
+
+---
+
+## 11. 业务域消歧（`infer_candidate_services` / `query_entity_graph`）
+
+### 问题：同名应用跨业务域，输出里看不出来
+
+实测本 CMDB：
+
+```
+VLMS   ×3 → handover（销售旅程） / work-order / workshop（服务旅程）
+DCP    ×3 → handover / offer-order / parts
+Xentry ×3 → parts / work-order / workshop
+```
+
+对 `problem="VLMS 打不开"`，`infer_candidate_services` 返回 3 个候选——**同分、同层、
+`reasons` 一字不差**（都是「问题描述命中 keywords:VLMS」）。调用方**没有任何依据**选，
+只能看名字后缀猜。**这不是排序问题，是信息没被表达出来。**
+
+### 三个字段（2026-09-17 新增）
+
+| 字段 | 位置 | 含义 |
+|---|---|---|
+| `business_paths` | 每个候选 | 该 app 的业务域路径，四条层的键**恒在**（缺的写 `null`）。列表——`portfolio_link` / `domain_link` 都没有 1:1 约束，且 `domain` 是 `portfolio` 的**平行层**，所以一个 app 天然可能有多条路径 |
+| `matched_domains` | 返回体顶层 | **输入文本命中到的业务域**。`[]` = 输入里没有域线索 |
+| `in_domain` | 每个候选 | 在不在命中的域内。**`null` ≠ `false`**：前者是"没有域线索，无从判断"，后者是"确实不在" |
+| `ambiguous` | 返回体顶层 | 头部候选同分却**跨业务域**。此时应去澄清，**而不是替调用方挑一个**（design-v5.7 §3.6） |
+
+### 域内/域外只用于排序与标注，**不制造也不丢弃候选**
+
+原因：业务域可能录错——实测 `order-service` 被桥接在 `work-order`，而「报价单」业务上属
+`offer-order`。若把域外候选直接丢掉，"域录错了"就会表现为"服务找不到"，比多给几个候选糟得多。
+
+### 消费方要带 `journey` 查图
+
+`query_entity_graph(node_types=['enterprise','journey','portfolio','domain','app'])` ——
+**必须带 `journey`**：portfolio 挂在哪个 journey 下**只能从返回的 `journey_link` 边看出来**。
+少了这一层，两个 journey 下的业务域就分不开，而消歧要用的正是这个信息。
+
+> ⚠️ 2026-09-17 之前 agentflow 的 `service-scoper` 只请求 `['app','portfolio','domain']`，
+> **journey 层在定位环节整层缺失**。
