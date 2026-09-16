@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 from aiops_datasource_mcp_server.backends import cmdb
+from aiops_datasource_mcp_server.backends import entity_graph as eg
 
 
 def _by_name(result: dict) -> dict[str, dict]:
@@ -125,10 +126,42 @@ async def test_locate_repo_unknown_service(env) -> None:
 
 
 def test_catalog_is_rich_enough(env) -> None:
-    """mock 目录规模（用户要求"数据 mock 多一些"）。"""
-    assert len(cmdb.known_services()) >= 10
-    for svc in cmdb.known_services():
+    """运行时目录的规模与字段完整度。
+
+    ⚠️ **只对 ``source=kubernetes`` 的 app 断言**：目录自 OTR 整合后含 60 个应用，
+    其中 50 个是业务盘点来的（``source=otr-inventory``），那份数据**根本没有**
+    owner / namespace / 拓扑层——它们的这些字段就该是 ``unknown``。
+    对它们断言"字段齐全"等于逼人编造。
+    """
+    graph = eg.get_graph()
+    k8s = [
+        name for name, meta in graph.services.items()
+        if meta.get("source", "kubernetes") == "kubernetes"
+    ]
+    assert len(k8s) >= 10
+    for svc in k8s:
         info = cmdb._info(svc)
         assert info["owner"] != "unknown", svc
         assert info["namespace"] != "unknown", svc
         assert info["tier"] in {"edge", "core", "support"}, svc
+
+
+def test_otr_inventory_apps_report_unknown_not_fabricated(env) -> None:
+    """OTR 业务应用的运行时字段是 ``unknown``（未知且不编造），而**不是**编出来的值。
+
+    这条钉住的是"未知不编造"这个不变量本身。它很容易被后人"修好"——看到一堆
+    ``owner: unknown`` 就顺手填个默认值，于是 ``get_service_topology`` 开始自信地
+    返回假归属。
+    """
+    graph = eg.get_graph()
+    otr = [
+        name for name, meta in graph.services.items()
+        if meta.get("source") == "otr-inventory"
+    ]
+    assert len(otr) == 50
+    for svc in otr[:5]:
+        info = cmdb._info(svc)
+        assert info["owner"] == "unknown", svc
+        assert info["tier"] == "unknown", svc
+        # 业务分级是有的——它是 OTR 真正的数据，落在另一个字段上
+        assert graph.services[svc]["business_tier"] in (1, 2, 3), svc

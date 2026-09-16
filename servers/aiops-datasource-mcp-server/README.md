@@ -122,12 +122,45 @@ uv run python -m aiops_datasource_mcp_server     # 默认 http://127.0.0.1:8300
 | `DATASOURCE_REPO_ROOT` | (空) | 本地仓库根目录；**非空**时 `locate_repo` 返回 `file://{root}/{repo}`（testbed 联调）；**无默认个人路径** |
 | `DATASOURCE_TOPOLOGY_DEFAULT_HOPS` | `2` | `get_service_topology` 默认跳数 |
 | `DATASOURCE_CMDB_PATH` | (空) | **CMDB 实体图谱文件（CMDB 的唯一载体）**；空 = 用包内 `data/cmdb-entities.json`（与 cwd 无关）。**缺失即 fail-closed 报错**——不返回空图 |
-| `DATASOURCE_INCIDENTS_PATH` | (空) | 可选的事件覆盖文件（Incident / Change）；空 = **暂无事件数据（合法状态）**。配了路径却读不到才算配置错误 |
+| `DATASOURCE_INCIDENTS_PATH` | (空) | 可选的事件覆盖文件（Incident / Change）；空 = **暂无事件数据（合法状态）**。配了路径却读不到才算配置错误。OTR 租户的用 `data/cmdb-incidents-otr.json` |
+| `DATASOURCE_ADMIN_ENABLED` | (未设置) | CMDB 写端点（`/admin/cmdb/**`）开关。未设置 = development 开、**production 关**；打开了 `production` 下强制要有 `AUTH_TOKEN` |
 | `DATASOURCE_REQUEST_TIMEOUT_SEC` | `30.0` | 单次上游请求超时 |
 | `DATASOURCE_MAX_RESPONSE_BYTES` | `1048576` | 单次返回字节上限（超出流式截断并标注） |
 | `DATASOURCE_MAX_RANGE_HOURS` | `24` | 单次查询最大时间跨度（防全量扫描） |
 | `DATASOURCE_DEFAULT_STEP_SEC` | `30` | `query_metrics` 默认采样步长 |
 | `LOG_LEVEL` | `INFO` | 日志级别 |
+
+## CMDB 编辑端点（`/admin/cmdb/**`）
+
+只读的 MCP 面（`/mcp`）不变；写入是一组**独立挂在 ASGI 上**的 HTTP 端点，
+给"在页面上改 CMDB"用。详见 `docs/cmdb-entities.md` §10。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/admin/cmdb/schema` | 表单 schema（ontology + 每种节点类型的 attributes 模型） |
+| GET | `/admin/cmdb/summary` | 当前图概况（每次写后返回） |
+| GET | `/admin/cmdb/nodes` | 节点清单（可选 `?type=`） |
+| POST | `/admin/cmdb/nodes` | 新增节点 |
+| PUT | `/admin/cmdb/nodes/{id}` | 改节点（局部更新） |
+| DELETE | `/admin/cmdb/nodes/{id}` | 删节点（默认拒绝被引用的；`?cascade=true` 才级联） |
+| POST | `/admin/cmdb/edges` | 新增边 |
+| DELETE | `/admin/cmdb/edges/{id}` | 删边 |
+
+```bash
+# 本地起服务（development 下默认可用）
+python -m aiops_datasource_mcp_server
+
+curl -s localhost:8300/admin/cmdb/summary | python3 -m json.tool
+curl -s -X PUT localhost:8300/admin/cmdb/nodes/portfolio:campaign \
+     -H 'Content-Type: application/json' -d '{"display_name":"营销活动"}'
+```
+
+**写前整份过 `build_graph`**：不合法的改动返回 422 且**文件逐字节不变**；
+校验通过才原子落盘。改完**下一次查询即生效**（MCP 工具无需重启）。
+
+> ⚠️ **未启用时这组路径根本不存在**（404）。默认只在 development 可用；
+> 想在 production 打开要显式设 `DATASOURCE_ADMIN_ENABLED=true` 并配 `AUTH_TOKEN`。
+> 它没有 CSRF 防护，打开后建议只在内网/本机监听。
 
 ## 工具返回
 

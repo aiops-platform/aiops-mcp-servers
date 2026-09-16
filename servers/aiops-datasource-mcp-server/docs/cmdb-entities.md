@@ -8,7 +8,9 @@
 | 文件 | 用途 |
 |---|---|
 | `src/aiops_datasource_mcp_server/data/cmdb-entities.json` | **唯一载体**（随包分发） |
-| `docs/cmdb-entities.schema.json` | JSON Schema —— 给将来的 CMDB 构建界面做表单生成与编辑器侧校验 |
+| `docs/cmdb-entities.schema.json` | JSON Schema —— 编辑器侧校验。⚠️ **不含**每种节点类型的 `attributes` 模型（`Node.attributes` 是 `dict[str, Any]`，`NODE_ATTR_MODELS` 是旁表），表单 schema 要走 `GET /admin/cmdb/schema` |
+| `src/aiops_datasource_mcp_server/backends/cmdb_admin.py` | **写路径**：节点/边的增删改，写前全量校验、原子落盘（见 §10） |
+| `scripts/import_otr_tenant.py` | OTR 租户导入器（幂等）。见 §5.1 |
 | `src/aiops_datasource_mcp_server/backends/entity_graph.py` | 加载 + 校验 + 派生索引 |
 | `src/aiops_datasource_mcp_server/backends/graph_query.py` | 图查询与候选推断（纯函数） |
 
@@ -23,7 +25,7 @@
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "metadata": { "source": "...", "derived_rules": { ... } },
   "ontology": { "node_types": [...], "edge_types": [...],
                 "key_attributes": [...], "derived_metrics": [...] },
@@ -44,14 +46,17 @@
 
 | 层 | 类型键 | 名称 | 本 CMDB 已录入 |
 |---|---|---|---|
-| **业务** | `enterprise` | Enterprise（企业功能） | 0 |
-| | `journey` | Journey（用户旅程） | 0 |
-| | `portfolio` | Portfolio（业务领域） | **0** ⚠️ 见 §5.1 |
-| | `domain` | Domain（业务细域） | 0 |
-| **应用** | `app` | App（应用／云环境） | **10** |
-| **支撑** | `team` / `agent` / `tool` | 团队 / 智能体 / 工具 | 0 |
-| **工程** | `codebase` / `wiki` | 代码仓库 / 知识文档 | **10** |
-| **事件** | `incident` / `change` | 故障 / 变更 | 0（见 §6 覆盖层） |
+| **业务** | `enterprise` | Enterprise（企业功能） | **1**（OTR） |
+| | `journey` | Journey（用户旅程） | **2** |
+| | `portfolio` | Portfolio（业务领域） | **11** |
+| | `domain` | Domain（业务细域） | **1**（手工录入，OTR 无此层） |
+| **应用** | `app` | App（应用／云环境） | **60**（50 业务盘点 + 10 k8s 服务，见 §5.5） |
+| **支撑** | `agent` | 智能体 | **17**（无 `agent_watches` 边，OTR 未给监视对象） |
+| **支撑** | `team` / `tool` | 团队 / 工具 | 0 |
+| **工程** | `codebase` / `wiki` | 代码仓库 / 知识文档 | **10** / 0 |
+| **事件** | `incident` / `change` | 故障 / 变更 | 0（**刻意留空**，见 §6 与 §5.5） |
+
+合计 102 节点 / 97 边（`schema_version` 1.1.0）。
 
 **业务层四类的层级**（收敛树，逐层变细）：
 
@@ -167,6 +172,9 @@ Enterprise ──→ Journey ──→ Portfolio ──┐
 `support` 合并了 Team 与 Wiki 两类支撑物（照参考 ontology 的形状），用
 `attributes.support_kind ∈ {team, wiki}` 区分。将来若要拆成两条边，是 minor 改动。
 
+⚠️ **`app_codebase` 是 1:1 的**——一个 app 最多一条。它给 `locate_repo` 供数
+（`repo_by_app` 是 dict，1:1），多条边会静默取最后一条。校验器强制，见 §7 第 12 条。
+
 ### `layer` 与 business 层约束（**enforced，不是文档约定**）
 
 每类边**必须声明 `layer`**，它把「app 与 app 之间不能直接关联，要通过业务域」这条规则
@@ -248,24 +256,71 @@ business 层：禁止 app — app
 > 这些词一个都不在 `keywords` 里。**真正的召回能力要靠真实工单里的说法补齐**——
 > 这是本文件当前最大的已知缺口。
 
-### 5.1 ⚠️ 业务层是完全空置的——那批 Portfolio **已被删除**
+### 5.1 业务层的来历：先删掉假的，再录入真的（OTR 租户）
 
-**曾经的 6 个 Portfolio**（`order` / `common` / `payment` / `inventory` / `logistics` /
-`account`）**已于 2026-09-15 全部删除**。它们是由 `attributes.namespace` 派生的。
-
-删除的原因是**它们语义上是错的**：`namespace` 是 **k8s 部署分组**，不是**业务领域**。
-最明显的是 `common`——它装着两个 owner 完全不同的服务（`notification-service`
-「平台基础」和 `audit-service`「安全合规」），业务上是个杂物筐。6 个里 4 个还是单例。
+**第一阶段（2026-09-15）：删掉那批假的。** 曾经的 6 个 Portfolio
+（`order` / `common` / `payment` / `inventory` / `logistics` / `account`）全部删除——
+它们由 `attributes.namespace` 派生，而 `namespace` 是 **k8s 部署分组**、不是**业务领域**。
+最明显的是 `common`：它装着两个 owner 完全不同的服务（`notification-service`
+「平台基础」和 `audit-service`「安全合规」），业务上是个杂物筐；6 个里 4 个还是单例。
 
 > **为什么是删除而不是改名沿用**：改名会把「部署分组」的语义残留带进业务分类——
 > 那比空着更糟，因为它会让人以为业务域已经理过了。
 
-**现状**：`enterprise` / `journey` / `portfolio` / `domain` **四类节点数均为 0**，
-业务语义（`description` / `terms` / `capability`）全部待录入。
+**第二阶段（2026-09-16）：录入真的。** OTR 租户的业务结构导入进来：
 
-**这意味着**：当前任何基于业务层的召回都会落空，只能靠 App 级真实字段
-（`name` / `namespace` / `owner` / `tech`）与 `calls` 拓扑。**业务域录入是提升
-「问题 → 服务」定位能力的前提**，schema 已就位（见 §2 的业务层属性）。
+| | 数量 | 来源 |
+|---|---|---|
+| `enterprise` | 1（OTR） | `snapshot.enterprise` |
+| `journey` | 2 | `snapshot.journeys` |
+| `portfolio` | 11 | `snapshot.portfolios` |
+| `domain` | 1（`domain:work-order-ops`） | **整合前手工录入的，OTR 无 domain 层，原样保留** |
+| `app` | 50（业务盘点）+ 10（k8s 服务） | 见 §5.5 |
+
+导入脚本：`scripts/import_otr_tenant.py`（**幂等**，可重复执行回基线）。
+
+```bash
+# 重新导入（otr.json 更新后照此重跑）
+python3 scripts/import_otr_tenant.py --dry-run
+python3 scripts/import_otr_tenant.py
+```
+
+**业务层 `keywords` 的来源要分清**：OTR **不提供**任何检索词，所以那里没有"以谁为准"
+的冲突。脚本把**整合前人工撰写的**中文问题视角词（`portfolio:warranty` 的「理赔」
+「索赔」、`portfolio:work-order` 的「工单」「售后订单」…）**合并保留**下来。这些词是
+§2 里那条"按用户怎么描述故障来写"的直接产物，丢掉它们等于把业务语言召回一起丢掉
+——实测「理赔申请没反应」正是靠它们才落到 `portfolio:warranty` 下。
+
+### 5.5 ⚠️ App 有两类来源，`source` 是判别字段
+
+整合后 `app` 桶里有两个语义层级不同的群体，**`attributes.source` 区分它们**：
+
+| `source` | 数量 | 有运行时字段吗 | 有仓库吗 |
+|---|---|---|---|
+| `kubernetes` | 10 | ✅ namespace/owner/tier/runtime/criticality | ✅ `aiops-test-*` 等 10 个 |
+| `otr-inventory` | 50 | ❌ **全为 null** | ❌ **没有** |
+
+**为什么 OTR 侧的运行时字段是 null 而不是填上默认值**：那份数据是**业务盘点**，
+根本不含 owner / namespace / runtime / 仓库——连 `snapshot.facts.teams: 10` 都是
+`round(50 / 5.2)` 算出来的**假数**。填默认值会让 `get_service_topology` 开始自信地
+返回假归属。**未知就写 null**，由 `AppAttributes` 的按来源校验器强制（见 §7）。
+
+**OTR 真正带来的是**：业务分级 `business_tier`（1/2/3）、`operational_status`、
+`incidents_total` / `change_count` / `risk_score`、技术栈 `tech`，以及
+`holiday_critical` / `finance_freeze` 两个横切标签。
+
+> ⚠️ **`business_tier` 与 `tier` 不是同一根轴**：OTR 的 1/2/3 是**业务分级**，
+> CMDB 的 `tier` 是**拓扑层**（edge/core/support）。把 T1 写进 `tier` 会被 Literal
+> 直接拒——这是刻意的（见 §4「`tier` 与 `tier1` 是两个东西」）。
+
+**桥接**：10 个 k8s 服务在业务层原本只有 2 个有归属，脚本按语义给其余 8 个补了
+`portfolio_link`（映射表在 `scripts/import_otr_tenant.py` 的 `BRIDGE`）。**这 10 条边
+是全图里唯一一处非来源数据**，已写进 `metadata.derived_rules.bridge_to_runtime_apps`，
+在编辑页面上可以直接改。
+
+**为什么不能按字面"以 otr.json 为准"删掉那 10 个服务**：OTR **完全没有**调用拓扑
+（50 个 app 之间**零条边**）与仓库信息。删掉这一层，`get_service_topology` 与
+`locate_repo` 会同时失去数据源，而 OTR 补不上——比"数据不够全"更糟的是"能力归零"。
 
 ### 5.2 `tier1` ← `criticality == "critical"`
 
@@ -304,6 +359,17 @@ business 层：禁止 app — app
 - 合并是**只增不改**：节点 id 或边三元组与主图冲突即报错（那说明两份数据对同一件事
   有不同说法，静默覆盖会藏掉一个真实的不一致）
 
+**OTR 的事件数据就在这里**：`data/cmdb-incidents-otr.json`（导入脚本一并生成），
+装的是 `snapshot.topStorm` 那一次风暴（`INC-MBR-77104`，159 条子告警，
+落点 `app:xentry-workshop`）。**默认不加载**——要把 `DATASOURCE_INCIDENTS_PATH`
+指过去才生效。
+
+> ⚠️ **别把它挪进主文件。** 主文件的 `incident` / `change` 桶**必须保持为空**：
+> `graph_query` 用"事件桶是否非空"判断 `have_incident_data`，一旦非空就启用事件匹配
+> 并把 `degraded` 翻成 False——等于拿一次风暴冒充整份事件语料，让
+> `infer_candidate_services` 以为自己有事件证据。
+> `tests/test_cmdb_entities_data.py` 有两条测试分别钉住"主文件为空"与"覆盖层里有数据"。
+
 ### 与主文件刻意相反的一条
 
 | | 主文件（`DATASOURCE_CMDB_PATH`） | 事件文件（`DATASOURCE_INCIDENTS_PATH`） |
@@ -341,7 +407,22 @@ business 层：禁止 app — app
 10. 逐边：id 唯一 / 类型已声明 / 端点存在 / 端点类型相容（无向边允许反向）/ 属性在词表内 /
     `(type, from, to)` 不重复
 11. `calls` 子图只引用已知 app（`cmdb._bfs` 依赖此不变量）
-12. 每个边类型**必须声明 `layer`**（缺了就无法执行第 6 条）
+12. **一个 app 最多一个 `app_codebase` 边**（`cmdb._repo_url` 依赖此不变量，见下）
+13. 每个边类型**必须声明 `layer`**（缺了就无法执行第 6 条）
+
+### 第 12 条：为什么"一个 app 一个仓库"要 fail-closed
+
+`repo_by_app` 是 **1:1 的 dict**，按 `repo_by_app[app.name] = codebase.name` 赋值。
+同一个 app 挂两条 `app_codebase` 时，**后出现的那条静默胜出**——不报错、不提示，
+结果只取决于边在文件里的顺序。哪天顺序一变（重新导入、在编辑页删了一条又加回来），
+`locate_repo` 指向的仓库就跟着变，而且**看不出发生过什么**。
+
+`locate_repo` 是"照着结果去翻代码"的工具：给错仓库比不给仓库危害大得多。
+
+> 真要多仓库（monorepo 拆分）再说——那需要先把 `repo_by_app` 改成一对多的结构、
+> 让 `locate_repo` 返回多个。不是把两条边塞进一个只能装一个值的 dict。
+
+**配套**：编辑页（§10）必须能**删边**，否则用户被这条约束挡住后只能回去开终端。
 
 **不做环检测**：真实 CMDB 可能有环，`_bfs` 已用 `dist` memo 正确处理。
 
@@ -367,6 +448,82 @@ business 层：禁止 app — app
 |---|---|---|
 | `DATASOURCE_CMDB_PATH` | 空 | 空 = 用包内 `data/cmdb-entities.json`（与 cwd 无关）。生产指向挂载卷 |
 | `DATASOURCE_INCIDENTS_PATH` | 空 | 空 = 无事件数据（合法）。见 §6 |
+| `DATASOURCE_ADMIN_ENABLED` | 未设置 | CMDB 写端点开关。未设置 = development 开、**production 关**。见 §10 |
 
 **热重载**：`get_graph()` 每次调用都 `stat()` 一次文件，以 `(路径, mtime)` 作缓存键。
 改完文件**下一次查询即生效，无需重启**——这是给将来的 CMDB 构建界面留的。
+
+---
+
+## 10. 写路径与编辑端点（`/admin/cmdb`）
+
+**只读的 MCP 面（`/mcp`）不变**；写入走一组独立挂在 ASGI 上的 HTTP 端点。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/admin/cmdb/schema` | 表单 schema（ontology + 每种类型的 attributes 模型） |
+| GET | `/admin/cmdb/summary` | 当前图概况（每次写后返回，用于确认改动生效） |
+| GET | `/admin/cmdb/nodes` | 节点清单（可选 `?type=`） |
+| POST | `/admin/cmdb/nodes` | 新增节点 |
+| PUT | `/admin/cmdb/nodes/{id}` | 改节点（局部更新） |
+| DELETE | `/admin/cmdb/nodes/{id}` | 删节点（默认不级联，`?cascade=true` 才连边一起删） |
+| POST | `/admin/cmdb/edges` | 新增边（`id` 可省，按 `e:<type>:<from>-><to>` 生成） |
+| DELETE | `/admin/cmdb/edges/{id}` | 删边 |
+
+> **建边时端点类型由 ontology 约束，不要在客户端复刻那套规则。** 前端只需读
+> `GET /admin/cmdb/schema` 的 `edge_types`：按 `from_types` / `to_types` 判断当前节点
+> 在该边的哪一端，并把另一端的选择范围**过滤到允许的类型**——102 个节点里挑一个，
+> 就此缩成 10 个 codebase 里挑一个，而且选不出非法组合。合法性仍由服务端判定。
+
+### 三条不可动摇的规矩
+
+1. **写前整份过一遍 `build_graph`，不过就整个不落盘。** 不设"轻量校验"这条捷径——
+   一条指向不存在节点的边、一个 id 前缀与 type 不符的节点**不会在读取时炸**，它会让
+   `get_service_topology` 返回一份看着正常的错答案。返回 422，文件**逐字节不变**。
+2. **删节点默认拒绝**（有边引用时返回 409 并列出是哪些边）。被引用说明图里还有别的
+   结构依赖它，静默级联会删掉用户没打算删的东西。要级联就显式声明，且删了哪些边
+   **如实返回**。
+3. **原子落盘**（临时文件 + `os.replace`）。进程在写一半时被杀，留下的是旧文件而不是
+   半截 JSON——半截文件会让 CMDB 工具 fail-closed，整个诊断链跟着挂。
+
+### 开关与认证
+
+- **未启用时整组路由不注册**（404），不是"注册了再返回 403"——不存在的路径更难被绕过。
+- 启用且有 `AUTH_TOKEN` 时，逐个请求校验 `Authorization: Bearer`。
+- **默认按环境**：development 开、**production 关**。一个能改诊断数据源的写端点，
+  不该因为"部署时忘了关"而暴露；要开就显式 `DATASOURCE_ADMIN_ENABLED=true`，
+  且 `production` 下必须有 `AUTH_TOKEN`（启动校验强制）。
+
+### 热重载是端到端成立的
+
+写完显式清一次 `clear_graph_cache()` / `clear_overlay_cache()`——不依赖文件系统时间戳
+的粒度（同 ns 内的两次写入在粗粒度 fs 上可能拿到同一个 mtime，那时缓存会返回上一版）。
+`get_service_topology` / `infer_candidate_services` 等工具**下一次调用**就能看到改动。
+
+### 数据可编辑之后，测试该怎么摆
+
+**这是做编辑器的必然推论，不是可选项。**
+
+实体文件一旦能被人改，"断言这份文件长什么样"的测试就会在**每次编辑时**变红——而编辑
+正是这个功能的目的。这样的测试最后只会被人删掉，连带把"迁移无损"那条真正的回归保护
+一起丢掉。
+
+所以分成两类，各自看**不同的数据**：
+
+| 测试 | 看哪份数据 | 断言什么 |
+|---|---|---|
+| `test_cmdb_entities_data.py` 的「迁移无损」三条 | `tests/fixtures/cmdb-migration-baseline.json`（**冻结**） | 逐字段、逐条边 |
+| 行为测试（拓扑方向、图查询、派生索引） | 同上（`env` 夹具统一指过去） | 语义正确性 |
+| 「文件本身」几条 | 包内**活文件** | **只断言结构与不变式**，不钉数量 |
+
+基线是**导入器的产出快照**——`scripts/import_otr_tenant.py` 跑完那一刻的状态，
+不含其后的人工编辑。要更新它，是明确决定"把当前状态认定为新基线"，**不是为了让测试变绿**：
+
+```bash
+git show HEAD:.../cmdb-entities.json > /tmp/base.json
+python3 scripts/import_otr_tenant.py --cmdb /tmp/base.json
+cp /tmp/base.json servers/aiops-datasource-mcp-server/tests/fixtures/cmdb-migration-baseline.json
+```
+
+> ⚠️ 别把基线改成指向包内活文件——那等于把"可编辑"这个前提撤销掉。
+> 也别因为活文件变了就改基线：活文件本来就该变。

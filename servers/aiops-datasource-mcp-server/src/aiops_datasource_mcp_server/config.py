@@ -61,6 +61,13 @@ class Settings(BaseSettings):
     # **空 = 无事件数据——这是合法状态，不是错误**。刻意与 datasource_cmdb_path
     # 的 fail-closed 语义相反：主文件缺失是配置问题，事件文件缺失只是还没数据。
     datasource_incidents_path: str = ""
+    # CMDB 管理端点（`/admin/cmdb/**`，可写）开关。**三态**：
+    #   未设置（默认）→ development 下可用、production 下**关闭**
+    #   true          → 显式打开（production 下要配合 AUTH_TOKEN；启动校验会强制要求）
+    #   false         → 显式关闭
+    # 默认不能在 production 打开，是因为这是一个**能改诊断数据源**的写端点：
+    # 它不该因为"部署时忘了关"而暴露。要开就显式开。见 admin_enabled。
+    datasource_admin_enabled: bool | None = None
 
     # --- 请求与配额 ---
     # 单次上游请求超时（秒）
@@ -82,6 +89,13 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    @property
+    def admin_enabled(self) -> bool:
+        """CMDB 写端点是否可用。未显式配置时**按环境默认**：development 开、production 关。"""
+        if self.datasource_admin_enabled is not None:
+            return self.datasource_admin_enabled
+        return self.environment != "production"
+
     def validate_for_environment(self) -> None:
         """启动前校验：production 下必须配置认证，防止服务裸奔。"""
         if self.environment != "production":
@@ -89,6 +103,13 @@ class Settings(BaseSettings):
         if not self.auth_token:
             raise ValueError(
                 "ENVIRONMENT=production 要求配置 AUTH_TOKEN，否则拒绝启动（防止服务裸奔）"
+            )
+        # 打开了 CMDB 写端点就一定要有认证——上面那条已保证 auth_token 非空，
+        # 这里只是把意图写明：这两件事必须同时成立，不能靠"碰巧"。
+        if self.datasource_admin_enabled and not self.auth_token:
+            raise ValueError(
+                "DATASOURCE_ADMIN_ENABLED=true 要求配置 AUTH_TOKEN"
+                "（CMDB 写端点绝不能无认证暴露）"
             )
 
 

@@ -1,0 +1,49 @@
+{
+  "schema_version": "1.1.0",
+  "metadata": {
+    "source": "OTR 事件覆盖层，源 otr.json snapshot.topStorm",
+    "derived_rules": {
+      "overlay_not_auto_loaded": {
+        "note": "本文件**不会被自动加载**：需要把 DATASOURCE_INCIDENTS_PATH 指向它。不指 = 没有事件数据，走 degraded 标记——这是合法状态，不是配置错误（docs/cmdb-entities.md §6）。",
+        "generated": true
+      }
+    }
+  },
+  "nodes": {
+    "incident": [
+      {
+        "id": "incident:inc-mbr-77104",
+        "type": "incident",
+        "name": "inc-mbr-77104",
+        "display_name": "INC-MBR-77104",
+        "description": "Xentry 上的告警风暴，扇出 159 条子告警；2026-11-27T08:42:00 — 2026-11-27T09:15:00。",
+        "attributes": {
+          "priority": "1 - Critical",
+          "severity": "3 - Low",
+          "child_count": 159,
+          "opened_at": "2026-11-27T08:42:00",
+          "resolved_at": "2026-11-27T09:15:00"
+        },
+        "tags": [],
+        "keywords": [
+          "INC-MBR-77104",
+          "inc-mbr-77104",
+          "Xentry",
+          "xentry"
+        ],
+        "refs": {},
+        "notes": "源：otr.json snapshot.topStorm / tenant.highlightEntities.stormIncident"
+      }
+    ],
+    "change": []
+  },
+  "edges": [
+    {
+      "id": "e:incident_cluster_app:inc-mbr-77104->xentry-workshop",
+      "type": "incident_cluster_app",
+      "from": "incident:inc-mbr-77104",
+      "to": "app:xentry-workshop",
+      "attributes": {}
+    }
+  ]
+}

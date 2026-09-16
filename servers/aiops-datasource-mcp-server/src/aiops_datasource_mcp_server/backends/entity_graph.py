@@ -32,7 +32,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from aiops_datasource_mcp_server.config import get_settings
 from aiops_datasource_mcp_server.errors import AppError, ErrorCode
@@ -122,11 +122,34 @@ class Ontology(BaseModel):
     derived_metrics: list[DerivedMetricSpec]
 
 
+#: ``AppAttributes`` 按来源的必填字段。
+#:
+#: **是数据，不是文档**——校验器与编辑界面的表单 schema 都从这里取，避免出现
+#: "界面没标必填、保存时才被拒"这种前后不一致。
+#:
+#: 为什么要单列出来：JSON Schema 表达不了**条件必填**（必填与否取决于另一个字段的取值），
+#: 所以 ``AppAttributes.model_json_schema()["required"]`` 里只有 ``kind``；
+#: 编辑界面拿那份 schema 根本不知道 ``namespace`` 是必填的。
+APP_REQUIRED_BY_SOURCE: dict[str, tuple[str, ...]] = {
+    "kubernetes": ("namespace", "owner", "tier", "runtime", "criticality", "tech"),
+    "otr-inventory": ("business_tier",),
+}
+
+
 class AppAttributes(BaseModel):
-    """App 节点的属性（前 6 个逐字段迁移自历史 ``_SERVICES``，``kind`` 为 v5.7 新增）。
+    """App 节点的属性。**两个来源，两套必填**，判别字段是 ``source``。
+
+    - ``kubernetes`` —— 运行时服务目录（前 6 个字段逐字段迁移自历史 ``_SERVICES``，
+      ``kind`` 为 v5.7 新增）。**运行时字段全部必填**：它们是 ``get_service_topology``
+      返回的目录信息，也是 ``locate_repo`` 的前提。
+    - ``otr-inventory`` —— OTR 业务应用清单（``service-intelligence-platform-ui`` 的
+      ``tools/tenant-data/otr.json``）。那份数据是**业务盘点**，**根本不含** owner /
+      namespace / runtime / 仓库（连 ``facts.teams`` 都是 ``round(apps/5.2)`` 算出来的）。
+      故这些字段允许为 null——**未知就写 null，不要编造**；它自带的是业务分级与运营指标。
 
     ``tier`` 是**拓扑层**（edge/core/support），与静态标签 ``tier1``（一级系统）是
-    两个不同概念——名字像，含义无关。
+    两个不同概念——名字像，含义无关。OTR 的 1/2/3 是**业务分级**，落在 ``business_tier``，
+    与 ``tier`` 不是同一根轴，**不要互相赋值**（把 T1 写进 ``tier`` 会被 Literal 直接拒）。
 
     ``kind`` 区分「应用」与「云环境」：按 v5.7 的约定，App 节点既表示具体实现某个业务域的
     应用/服务，**也表示它所在的云环境**（如 ``azure-cn-north3``）。判断相关性时能据此
@@ -137,13 +160,49 @@ class AppAttributes(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     kind: Literal["application", "environment"]
-    namespace: str
-    owner: str
-    tier: Literal["edge", "core", "support"]
-    tech: str
-    runtime: str
-    criticality: Literal["critical", "high", "medium", "low"]
+    #: 条目来源。缺省 ``kubernetes`` = 历史数据行为完全不变。
+    source: Literal["kubernetes", "otr-inventory"] = "kubernetes"
+
+    # ---- kubernetes 运行时目录（source=kubernetes 时必填，见校验器）----
+    namespace: str | None = None
+    owner: str | None = None
+    tier: Literal["edge", "core", "support"] | None = None
+    runtime: str | None = None
+    criticality: Literal["critical", "high", "medium", "low"] | None = None
+
+    #: 技术栈。两个来源都有，只是形态不同：k8s 侧本来就是单串
+    #: （``"Java / Spring Boot"``），OTR 侧由 ``appTechnologies`` 的 techNames 拼成同形。
+    tech: str | None = None
+
+    # ---- OTR 业务清单（source=otr-inventory 时 business_tier 必填）----
+    #: 业务分级 1|2|3（OTR 原始语义）。**不是** ``tier``——两者不同轴。
+    business_tier: Literal[1, 2, 3] | None = None
+    operational_status: Literal["ok", "degraded", "down"] | None = None
+    incidents_total: int | None = None
+    change_count: int | None = None
+    risk_score: int | None = None
+
     business_role: str | None = None
+
+    @model_validator(mode="after")
+    def _require_runtime_fields_for_kubernetes(self) -> AppAttributes:
+        """按来源强制必填——**这是"未知不许编造"的强制点**。
+
+        没有它，OTR 侧的空 owner 会悄悄通过，``get_service_topology`` 就会返回一堆
+        ``owner: null`` 却看起来正常。反过来，k8s 侧少写一个字段也必须当场报错。
+        """
+        required = APP_REQUIRED_BY_SOURCE[self.source]
+        missing = [k for k in required if getattr(self, k) is None]
+        if missing:
+            hint = (
+                "这是 k8s 服务目录的契约，不能用 null 占位"
+                if self.source == "kubernetes"
+                else "业务盘点里没有的字段可以留空，但这个不是——它承载 OTR 的业务分级"
+            )
+            raise ValueError(
+                f"source={self.source} 的 app 缺少必填字段 {missing}——{hint}"
+            )
+        return self
 
 
 class BusinessDomainAttributes(BaseModel):
@@ -695,6 +754,35 @@ def build_graph(
                 raise GraphLoadError(
                     f"calls 边指向未知应用 {callee!r}（起点 {caller!r}）", {"path": path}
                 )
+
+    # ---- 一个 app 最多一个 codebase（``cmdb._repo_url`` 依赖这个不变量）----
+    #
+    # ``repo_by_app`` 是 **1:1 的 dict**，按 ``repo_by_app[app.name] = codebase.name``
+    # 赋值。同一个 app 挂两条 ``app_codebase`` 时，**后出现的那条静默胜出**——
+    # 不报错、不提示，只取决于边在文件里的顺序。`locate_repo` 是个"照着结果去翻代码"
+    # 的工具，给错仓库比不给仓库危险得多，所以这里 fail-closed。
+    #
+    # 真要多仓库（monorepo 拆分）再说：那需要先把 ``repo_by_app`` 改成一对一多的结构，
+    # 并让 locate_repo 返回多个——不是把两条边塞进一个只能装一个值的 dict。
+    # 循环变量叫 `e` 而不是 `edge`：上面逐边校验那段用的是 `for edge in doc.edges`
+    # （此时 `edge` 还是 pydantic 的 `Edge` 模型），复用同名会让 mypy 按第一次绑定
+    # 推断类型，进而在 `edge["type"]` 上报 "Edge is not indexable"。
+    repos_by_app: dict[str, list[str]] = {}
+    for e in edges:
+        if e["type"] != "app_codebase":
+            continue
+        app_id, cb_id = e["from"], e["to"]
+        if nodes[cb_id]["type"] == "app":
+            app_id, cb_id = cb_id, app_id
+        repos_by_app.setdefault(app_id, []).append(cb_id)
+    for app_id, cb_ids in repos_by_app.items():
+        if len(cb_ids) > 1:
+            raise GraphLoadError(
+                f"应用 {app_id} 挂了 {len(cb_ids)} 个 codebase（{sorted(cb_ids)}）——"
+                f"一个应用只能有一个仓库：`repo_by_app` 是 1:1 的映射，多条边会让"
+                f"`locate_repo` 静默返回**最后一条**指向的仓库。请在编辑页删掉多余的那条。",
+                {"path": path, "app": app_id, "codebases": sorted(cb_ids)},
+            )
     return graph
 
 

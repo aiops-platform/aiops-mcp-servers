@@ -16,9 +16,13 @@ from aiops_datasource_mcp_server.errors import ErrorCode
 
 
 @pytest.fixture
-def base_doc() -> dict:
-    """以**真实实体文件**为基准做变异——顺带保证基准本身是合法的。"""
-    return json.loads(Path(eg.resolve_cmdb_path()).read_text(encoding="utf-8"))
+def base_doc(baseline_cmdb) -> dict:
+    """以**冻结基线**为基准做变异——顺带保证基准本身是合法的。
+
+    ⚠️ 基准用冻结副本而不是包内活文件：后者现在是可编辑的用户数据，会随人工编辑
+    变化，取件顺序类的断言（`doc["nodes"]["app"][0]` 是谁）会跟着飘。
+    """
+    return json.loads(Path(baseline_cmdb).read_text(encoding="utf-8"))
 
 
 def _write(tmp_path: Path, doc: dict, name: str = "cmdb.json") -> str:
@@ -55,18 +59,27 @@ def _strip_business(doc: dict) -> dict:
 
 
 def test_default_file_loads(tmp_path, clear_settings_cache) -> None:
+    """包内那份**活文件**加载得动，且结构完整。
+
+    ⚠️ **这里刻意不断言数量。** 活文件是可编辑的用户数据（编辑页 + `/admin/cmdb/**`），
+    钉住 `node_count == 102` 这类数字会让**每次人工编辑都触发假失败**——而编辑正是
+    这个功能的目的。数量与"历史字段逐字未变"由 `test_cmdb_entities_data.py` 对着
+    **冻结基线**（`tests/fixtures/cmdb-migration-baseline.json`）验证。
+
+    这条只保证一件事，而它很重要：**随 wheel 分发的那份文件本身是合法的**。
+    它坏掉的话所有 CMDB 工具都会 fail-closed，且只在装了包的环境里才暴露。
+    """
     graph = eg.get_graph()
-    assert graph.schema_version == "1.0.0"
-    # 10 app + 10 codebase + 2 portfolio + 1 domain
-    assert graph.node_count == 23
-    # 13 calls + 10 app_codebase + 2 portfolio_link + 1 domain_link
-    assert len(graph.edges) == 26
+    assert graph.schema_version.startswith("1.")
+    assert set(graph.nodes_by_type) == {t.key for t in graph.ontology.node_types}
+    assert graph.node_count > 0
+    assert len(graph.edges) > 0
 
 
 def test_explicit_path_load_writes_roundtrip(tmp_path, base_doc) -> None:
     graph = _load(tmp_path, base_doc)
-    assert graph.node_count == 23
-    assert len(graph.services) == 10
+    assert graph.node_count == 102
+    assert len(graph.services) == 60
 
 
 # ======================================================================
@@ -387,9 +400,14 @@ def test_keywords_may_not_shadow_closed_tags(tmp_path, base_doc) -> None:
 
 
 def test_keywords_are_open_vocabulary(tmp_path, base_doc) -> None:
-    """正向对照：keywords 是**开放**词表（不像 tags 有枚举），任意词都收。"""
+    """正向对照：keywords 是**开放**词表（不像 tags 有枚举），任意词都收。
+
+    按 **name 取节点**而不是按下标：``nodes["app"]`` 的顺序取决于来源文件里应用的
+    排列，OTR 整合后第 0 个已经不是 gateway-service 了。用下标会得到一条
+    "改的是 A、断言的是 B"的测试——它照样会红，但红得莫名其妙。
+    """
     doc = copy.deepcopy(base_doc)
-    doc["nodes"]["app"][0]["keywords"] = ["任意新词", "尚未声明的说法"]
+    _app(doc, "gateway-service")["keywords"] = ["任意新词", "尚未声明的说法"]
     graph = _load(tmp_path, doc)
     assert graph.nodes["app:gateway-service"]["keywords"] == ["任意新词", "尚未声明的说法"]
 

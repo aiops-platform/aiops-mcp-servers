@@ -6,6 +6,52 @@
 
 ### Added
 
+- **CMDB：OTR 租户整合 + 可编辑**（`aiops-datasource-mcp-server`）
+  - **数据**：业务层从空置变为完整——`enterprise` 1 / `journey` 2 / `portfolio` 11 /
+    `app` 50（OTR 业务应用）+ 17 `agent`，加上原有的 10 个 k8s 服务与 10 个 codebase。
+    合计 102 节点 / 97 边，`schema_version` → `1.1.0`
+  - **导入器** `scripts/import_otr_tenant.py`：**幂等**，可重复执行；以
+    `service-intelligence-platform-ui/tools/tenant-data/otr.json` 为准重新生成
+  - **App 分源建模**（`AppAttributes.source`）：`kubernetes`（运行时字段必填）与
+    `otr-inventory`（OTR 是业务盘点，**不含** owner/namespace/runtime/仓库，
+    一律写 null 而不是编造）。按来源的必填由 `model_validator` 强制
+  - **桥接**：10 个 k8s 服务按语义挂进 OTR 业务域（`portfolio_link`），使业务层与
+    运行时层成为一张连通图。**这 10 条边是人工判断**，已记入 `derived_rules` 供编辑
+  - **事件走覆盖层**：OTR 的 `topStorm` 生成 `data/cmdb-incidents-otr.json`，
+    **不放进主文件**——主文件的事件桶非空会翻转 `have_incident_data`、让推断
+    误以为自己有事件证据
+  - **写面** `/admin/cmdb/**`：节点/边的增删改。写前**整份过 `build_graph`**，
+    不过则 422 且文件逐字节不变；原子落盘（临时文件 + `os.replace`）；
+    删节点**默认拒绝**被引用的节点（409 并列出挡路的边），`?cascade=true` 才级联
+  - **开关** `DATASOURCE_ADMIN_ENABLED`：未设置时 development 开、**production 关**；
+    未启用则**整组路由不注册**（404）；启用且有 `AUTH_TOKEN` 时逐请求校验 Bearer
+  - `GET /admin/cmdb/schema` 给出每种节点类型的 attributes 表单 schema——
+    `EntityDocument.model_json_schema()` **看不到** `NODE_ATTR_MODELS`（旁表），
+    表单不能只有那份；`conditional_required` 另给**条件必填**（app 看 `source`），
+    因为 JSON Schema 表达不了它，界面只照 `required` 渲染就漏标必填
+  - **新不变量：一个 app 最多一个 `app_codebase` 边**（校验期 fail-closed）。
+    `repo_by_app` 是 1:1 的 dict，多条边会让**后出现的那条静默胜出**、结果只取决于
+    边在文件里的顺序；`locate_repo` 指错仓库比找不到仓库危害大。见 docs §7 第 12 条
+
+### Fixed
+
+- **`locate_repo` 不再为没有仓库的服务编造 URL**：`_repo_url` 原有 `or service` 兜底，
+  在"每个服务都有仓库"的旧数据下从不触发；OTR 的 50 个应用没有仓库，兜底会为它们
+  拼出 `https://github.com/<org>/<service>`——一个不存在的地址，却长得像真的。
+  现在未登记仓库时返回空串，`locate_repo` 报 `found=false` 并**区分**两种情形
+  （服务不在目录中 / 服务在目录中但没有仓库）
+- `_info` 把 `None` 与"键不存在"统一归到 `"unknown"`——OTR 侧的显式 null 否则会
+  在摘要里渲染成字面的 `None`
+
+### Changed
+
+- **CMDB 测试改为对着「冻结基线」，不再钉住可编辑的活文件**
+  （`tests/fixtures/cmdb-migration-baseline.json`）。实体文件一旦能被人从编辑页改，
+  "断言这份文件长什么样"的测试就会在**每次编辑时**变红——而编辑正是这个功能的目的，
+  这样的测试最后只会被删掉，连带把「迁移无损」那条真正的回归保护一起丢掉。
+  现在分两类：数据一致性断言看**冻结基线**（`env` 夹具统一指过去），
+  活文件只断言**结构与不变式**。更新基线的步骤见 docs §10
+
 - **aiops-datasource-mcp-server**（新增独立可部署 MCP Server）
   - **领域型**只读工具：`query_logs` / `get_trace` / `query_metrics` / `check_infra` / `describe_pod`
     ——调用方传领域语义（`metric=cpu_percent`），**不传 PromQL 表达式**；语义映射住在 server 侧

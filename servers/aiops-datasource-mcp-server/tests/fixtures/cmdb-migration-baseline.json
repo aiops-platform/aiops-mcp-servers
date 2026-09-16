@@ -2011,6 +2011,32 @@
         ]
       },
       {
+        "id": "app:inventory-service",
+        "type": "app",
+        "name": "inventory-service",
+        "display_name": null,
+        "attributes": {
+          "kind": "application",
+          "namespace": "inventory",
+          "owner": "库存团队",
+          "tier": "core",
+          "tech": "Go",
+          "runtime": "k8s",
+          "criticality": "high",
+          "source": "kubernetes"
+        },
+        "tags": [],
+        "refs": {},
+        "notes": null,
+        "description": "库存服务：库存查询与扣减",
+        "keywords": [
+          "inventory-service",
+          "inventory",
+          "库存",
+          "库存团队"
+        ]
+      },
+      {
         "id": "app:logistics-service",
         "type": "app",
         "name": "logistics-service",
@@ -2205,6 +2231,7 @@
         "keywords": [
           "warranty-service",
           "warranty",
+          "售后",
           "保修",
           "退换货",
           "售后保障"
@@ -3172,6 +3199,13 @@
       "attributes": {}
     },
     {
+      "id": "e:portfolio_link:parts->inventory-service",
+      "type": "portfolio_link",
+      "from": "portfolio:parts",
+      "to": "app:inventory-service",
+      "attributes": {}
+    },
+    {
       "id": "e:portfolio_link:offer-order->pricing-service",
       "type": "portfolio_link",
       "from": "portfolio:offer-order",
@@ -3241,6 +3275,33 @@
       }
     },
     {
+      "id": "e:calls:order-service->payment-service",
+      "type": "calls",
+      "from": "app:order-service",
+      "to": "app:payment-service",
+      "attributes": {
+        "relation": "rpc"
+      }
+    },
+    {
+      "id": "e:calls:order-service->inventory-service",
+      "type": "calls",
+      "from": "app:order-service",
+      "to": "app:inventory-service",
+      "attributes": {
+        "relation": "rpc"
+      }
+    },
+    {
+      "id": "e:calls:order-service->pricing-service",
+      "type": "calls",
+      "from": "app:order-service",
+      "to": "app:pricing-service",
+      "attributes": {
+        "relation": "rpc"
+      }
+    },
+    {
       "id": "e:calls:order-service->notification-service",
       "type": "calls",
       "from": "app:order-service",
@@ -3265,6 +3326,24 @@
       "to": "app:notification-service",
       "attributes": {
         "relation": "mq"
+      }
+    },
+    {
+      "id": "e:calls:inventory-service->logistics-service",
+      "type": "calls",
+      "from": "app:inventory-service",
+      "to": "app:logistics-service",
+      "attributes": {
+        "relation": "http"
+      }
+    },
+    {
+      "id": "e:calls:inventory-service->pricing-service",
+      "type": "calls",
+      "from": "app:inventory-service",
+      "to": "app:pricing-service",
+      "attributes": {
+        "relation": "rpc"
       }
     },
     {
@@ -3311,6 +3390,13 @@
       "type": "app_codebase",
       "from": "app:payment-service",
       "to": "codebase:payment-service",
+      "attributes": {}
+    },
+    {
+      "id": "e:app_codebase:inventory-service",
+      "type": "app_codebase",
+      "from": "app:inventory-service",
+      "to": "codebase:inventory-service",
       "attributes": {}
     },
     {

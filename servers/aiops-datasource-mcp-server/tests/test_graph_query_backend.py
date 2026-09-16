@@ -16,7 +16,12 @@ from aiops_datasource_mcp_server.errors import AppError, ErrorCode
 
 
 @pytest.fixture
-def graph(clear_settings_cache) -> eg.EntityGraph:
+def graph(baseline_cmdb) -> eg.EntityGraph:
+    """冻结基线上的图。
+
+    ⚠️ 不能读包内那份活文件：CMDB 现在是**可编辑**的，活文件会随人工编辑变化，
+    数量类断言会在每次有人改数据时变红。见 conftest 的 BASELINE_CMDB。
+    """
     return eg.get_graph()
 
 
@@ -36,7 +41,7 @@ def _strip_business(doc: dict) -> dict:
 
 
 @pytest.fixture
-def biz_graph(tmp_path, clear_settings_cache) -> eg.EntityGraph:
+def biz_graph(tmp_path, baseline_cmdb) -> eg.EntityGraph:
     """种子文件（业务层已清空）+ 一小组自建业务层节点与它们的归属边。"""
     doc = _strip_business(
         json.loads(Path(eg.resolve_cmdb_path()).read_text(encoding="utf-8"))
@@ -93,10 +98,14 @@ def _ids(result: dict) -> set[str]:
 # ======================================================================
 def test_no_filter_returns_whole_graph(graph) -> None:
     r = gq.query_graph(graph)
-    assert r["matched"]["nodes"] == 23          # 10 app + 10 codebase + 3 业务节点
-    assert r["matched"]["edges"] == 26          # 13 calls + 10 app_codebase + 3 business
-    assert r["counts"]["node_types"]["app"] == 10
-    assert r["counts"]["node_types"]["journey"] == 0
+    # 业务层 15（1 enterprise + 2 journey + 11 portfolio + 1 domain）
+    #   + app 60 + codebase 10 + agent 17
+    assert r["matched"]["nodes"] == 102
+    # 2 enterprise_journey + 11 journey_link + 60 portfolio_link
+    #   + 13 calls + 10 app_codebase + 1 domain_link
+    assert r["matched"]["edges"] == 97
+    assert r["counts"]["node_types"]["app"] == 60
+    assert r["counts"]["node_types"]["journey"] == 2     # OTR 整合后不再为 0
     assert r["counts"]["edge_types"]["calls"] == 13
     assert r["counts"]["edge_types"]["support"] == 0
 
@@ -111,12 +120,17 @@ def test_facets_cover_all_four_dimensions(graph) -> None:
         "enterprise", "journey", "portfolio", "domain", "app",
         "team", "agent", "tool", "codebase", "wiki", "incident", "change",
     }
-    # 业务层已有 2 个 portfolio，不再整维为空
-    assert {p["key"] for p in f["portfolios"]} == {"work-order", "warranty"}
-    assert {p["key"]: p["count"] for p in f["portfolios"]}["work-order"] == 1
+    # 业务层来自 OTR 租户，11 个业务领域，不再整维为空
+    assert {p["key"] for p in f["portfolios"]} == {
+        "campaign", "lead", "consulation", "offer-order", "handover", "used-car",
+        "work-order", "workshop", "warranty", "parts", "accounting",
+    }
+    # work-order 下 5 个 OTR 业务应用 + 桥接过来的 order-service
+    assert {p["key"]: p["count"] for p in f["portfolios"]}["work-order"] == 6
     # 计数是现算的，不是存储的
     assert {a["key"]: a["count"] for a in f["key_attributes"]}["tier1"] == 2
-    assert {a["key"]: a["count"] for a in f["key_attributes"]}["holiday_critical"] == 0
+    # holiday_critical 原本为 0（种子数据无人用它）；OTR 的 apps 带来了真实取值
+    assert {a["key"]: a["count"] for a in f["key_attributes"]}["holiday_critical"] == 21
 
 
 def test_derived_metrics_are_declared_but_unavailable(graph) -> None:
@@ -141,7 +155,7 @@ def test_every_edge_type_declares_a_layer(graph) -> None:
 # ======================================================================
 def test_node_type_dimension(graph) -> None:
     r = gq.query_graph(graph, node_types=["app"])
-    assert r["matched"]["nodes"] == 10
+    assert r["matched"]["nodes"] == 60   # 50 个 OTR 业务应用 + 10 个 k8s 服务
     assert all(n["type"] == "app" for n in r["nodes"])
     assert r["matched"]["edges"] == 13   # 只剩 calls（app—codebase 的一端是 codebase）
 
@@ -184,11 +198,24 @@ def test_key_attribute_dimension(graph) -> None:
 
 
 def test_declared_but_unused_key_attribute_returns_empty_not_error(graph) -> None:
-    """`holiday_critical` 是**声明过的**合法取值——过滤它返回空是正常语义，不报错。
+    """`manhattan_wms_spotlight` 是**声明过的**合法取值——过滤它返回空是正常语义，不报错。
 
     这与"传了不存在的取值"必须区分开：前者是数据尚未录入，后者是拼写错误。
+
+    ⚠️ 这条测试**必须挑一个当前无人使用的标签**。原先挑的是 `holiday_critical`，
+    OTR 整合后它有 21 个节点在用，前提就不成立了（测试会红，但红得毫无意义）。
+    换标签时请先确认它确实为空——否则这条测试会退化成在验证"有数据时返回有数据"。
+    四个静态标签里现在只有这一个仍为空。
     """
-    r = gq.query_graph(graph, key_attributes=["holiday_critical"])
+    graph_ = eg.get_graph()
+    used = {
+        tag for node in graph_.nodes.values() for tag in node["tags"]
+    }
+    assert "manhattan_wms_spotlight" not in used, (
+        "本测试依赖 manhattan_wms_spotlight 无人使用；它一旦被用上，请换一个仍为空的标签"
+    )
+
+    r = gq.query_graph(graph, key_attributes=["manhattan_wms_spotlight"])
     assert r["matched"]["nodes"] == 0
     assert r["summary"].startswith("命中 0 个节点")
 

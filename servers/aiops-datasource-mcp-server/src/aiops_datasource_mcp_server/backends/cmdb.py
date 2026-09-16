@@ -64,16 +64,25 @@ def _upstream_of(service: str, graph: EntityGraph | None = None) -> dict[str, st
 
 
 def _info(service: str, graph: EntityGraph | None = None) -> dict:
-    """目录信息（未知服务返回最小占位，不抛——拓扑里可能出现目录未收录的节点）。"""
+    """目录信息（未知服务返回最小占位，不抛——拓扑里可能出现目录未收录的节点）。
+
+    ``None`` 与"键不存在"一律归到 ``"unknown"``：OTR 业务应用的那些字段是**显式 null**
+    （未知、且刻意不编造），而返回契约里"未知"一直是字符串 ``"unknown"``。
+    两者混用会让摘要里冒出字面的 ``None``，也让调用方要判两种空。
+    """
     g = graph or get_graph()
     meta = g.services.get(service, {})
+
+    def _s(key: str, default: str) -> str:
+        return meta.get(key) or default
+
     return {
         "service": service,
-        "tier": meta.get("tier", "unknown"),
-        "owner": meta.get("owner", "unknown"),
-        "namespace": meta.get("namespace", "unknown"),
-        "tech": meta.get("tech", ""),
-        "criticality": meta.get("criticality", "unknown"),
+        "tier": _s("tier", "unknown"),
+        "owner": _s("owner", "unknown"),
+        "namespace": _s("namespace", "unknown"),
+        "tech": _s("tech", ""),
+        "criticality": _s("criticality", "unknown"),
     }
 
 
@@ -103,10 +112,19 @@ def _bfs(
 
 
 def _repo_url(service: str, graph: EntityGraph | None = None) -> str:
-    """按配置拼仓库 URL：本地 root 优先（testbed），否则远端。"""
+    """按配置拼仓库 URL：本地 root 优先（testbed），否则远端。
+
+    **未登记仓库时返回空串，不拿服务名顶替。** 这里原本有个 ``or service`` 兜底：
+    目录里每个服务都恰好有仓库，兜底从不触发，看着无害。但 OTR 的 50 个业务应用
+    **没有仓库信息**（它那份数据里根本没有），兜底就会为它们凭空拼出
+    ``https://github.com/<org>/<service>``——一个不存在的地址，却长得像真的。
+    对 ``locate_repo`` 这种"照着结果去翻代码"的工具，编造比缺数据危险得多。
+    """
     settings = get_settings()
     g = graph or get_graph()
-    repo = (g.services.get(service) or {}).get("repo") or service
+    repo = (g.services.get(service) or {}).get("repo") or ""
+    if not repo:
+        return ""
     root = (settings.datasource_repo_root or "").strip().rstrip("/")
     if root:
         return f"file://{root}/{repo}"
@@ -182,7 +200,15 @@ async def get_service_topology(service: str, hops: int = 2) -> dict:
 
 
 async def locate_repo(service: str) -> dict:
-    """由服务名定位仓库（service → repo URL + 目录信息）。"""
+    """由服务名定位仓库（service → repo URL + 目录信息）。
+
+    ``found=false`` 有**两种**情形，都如实区分——把它们混成一句"未收录"会让 agent
+    以为 OTR 的业务应用不在 CMDB 里：
+
+    - 服务不在 CMDB 目录中（附 ``known_services``）
+    - 服务在目录中、但**没有登记代码仓库**（OTR 的 50 个业务应用就是这样：
+      那份数据只做业务盘点，根本不含仓库）
+    """
     graph = get_graph()
     if service not in graph.services:
         return {
@@ -191,13 +217,24 @@ async def locate_repo(service: str) -> dict:
             "known_services": sorted(graph.services),
         }
     info = _info(service, graph)
-    repo = graph.services[service]["repo"]
+    repo_url = _repo_url(service, graph)
+    if not repo_url:
+        return {
+            **info,
+            "found": False,
+            "repo": "",
+            "repo_url": "",
+            "summary": (
+                f"{service} 已在 CMDB 目录中，但**未登记代码仓库**——"
+                f"不要为它推断或编造仓库地址"
+            ),
+        }
     return {
         **info,
         "found": True,
-        "repo": repo,
-        "repo_url": _repo_url(service, graph),
-        "summary": f"{service} → {_repo_url(service, graph)}（{info['owner']}，{info['tier']}）",
+        "repo": graph.services[service]["repo"],
+        "repo_url": repo_url,
+        "summary": f"{service} → {repo_url}（{info['owner']}，{info['tier']}）",
     }
 
 
