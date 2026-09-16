@@ -458,7 +458,7 @@
         "id": "portfolio:campaign",
         "type": "portfolio",
         "name": "campaign",
-        "display_name": "Campaign",
+        "display_name": "改一下",
         "description": "Campaign 业务领域。",
         "attributes": {},
         "tags": [],

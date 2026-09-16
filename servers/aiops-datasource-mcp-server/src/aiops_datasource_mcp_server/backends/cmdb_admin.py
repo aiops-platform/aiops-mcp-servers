@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import stat
 import tempfile
 import threading
 from pathlib import Path
@@ -90,16 +91,25 @@ def _validate(doc: dict) -> None:
 
 
 def _write_atomic(doc: dict) -> None:
-    """原子替换：写临时文件 → ``os.replace``。同目录保证 replace 是原子的。"""
+    """原子替换：写临时文件 → ``os.replace``。同目录保证 replace 是原子的。
+
+    ⚠️ **必须显式继承原文件的权限位。** ``tempfile.mkstemp`` 建出来的文件是 ``0600``，
+    而 ``os.replace`` 会把**临时文件的模式**带到目标上——不处理的话，每一次从编辑页
+    保存都会把实体文件的权限悄悄改成 ``0600``。本地单人用看不出来；文件在挂载卷上、
+    由另一个身份的进程读时才发现读不了，且没人会想到是"某次保存改的"。
+    """
     path = _path()
     payload = json.dumps(doc, ensure_ascii=False, indent=2) + "\n"
     try:
+        mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
         fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".cmdb-", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(payload)
                 fh.flush()
                 os.fsync(fh.fileno())
+            if mode is not None:
+                os.chmod(tmp, mode)
             os.replace(tmp, path)
         except BaseException:
             # 失败时别把临时文件留在 data/ 里——它会跟着 wheel 一起被打包

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -363,3 +364,23 @@ def test_admin_rejects_bad_json_with_400(env, cmdb, monkeypatch, clear_settings_
         headers={"Content-Type": "application/json"},
     )
     assert r.status_code == 400
+
+
+def test_write_preserves_file_mode(cmbd=None) -> None:
+    """保存**不得**改变文件权限位。
+
+    ``tempfile.mkstemp`` 建出来的是 0600，而 ``os.replace`` 会把临时文件的模式带到
+    目标上——不显式继承的话，每次从编辑页保存都把实体文件改成 0600。本地单人用看不出来；
+    文件在挂载卷上、由另一个身份的进程读时才发现读不了，且没人会想到是"某次保存改的"。
+    """
+    import stat
+    from pathlib import Path as _Path
+
+    path = _Path(cmdb_admin.resolve_cmdb_path())
+    os.chmod(path, 0o644)
+    before = stat.S_IMODE(path.stat().st_mode)
+
+    cmdb_admin.update_node("portfolio:campaign", {"display_name": "改一下"})
+
+    after = stat.S_IMODE(path.stat().st_mode)
+    assert after == before, f"权限位被改了：{oct(before)} → {oct(after)}"
