@@ -1,11 +1,54 @@
 """共享 fixtures：清配置缓存 + 隔离常用 env + 上游默认地址 + 冻结的 CMDB 基线。"""
 from __future__ import annotations
 
+import hashlib
+from importlib import resources
 from pathlib import Path
 
 import pytest
 from aiops_datasource_mcp_server.backends import entity_graph as eg
 from aiops_datasource_mcp_server.config import get_settings
+
+#: 包内那份**活文件**的真实路径。刻意不走 `resolve_cmdb_path()`——后者会被
+#: `DATASOURCE_CMDB_PATH` 影响，而下面那道守卫要盯的正是"没人动过它"。
+_LIVE_CMDB = Path(
+    str(resources.files("aiops_datasource_mcp_server").joinpath("data", "cmdb-entities.json"))
+)
+
+
+def _digest(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _live_cmdb_must_stay_untouched():
+    """**整轮测试不得改动包内那份活实体文件。**
+
+    这是踩了两次之后加的防护网，两次都是"测试全绿、数据被悄悄改了"：
+
+    1. `cmdb` 夹具里先调 `eg.resolve_cmdb_path()`（它**顺带把 `get_settings` 的
+       lru_cache 暖热**），之后 `monkeypatch.setenv` 再也进不去——写操作直接落到真文件；
+    2. 夹具参数名拼成 `cmbd`（少个 a），pytest 静默不注入夹具、参数取默认 `None`，
+       于是测试拿不到 tmp 副本，原地改真数据。
+
+    两次的症状一模一样：测试通过，没人发现数据变了。所以这里不靠人细心，
+    靠会话前后各取一次哈希——变了就报，并指出该从哪里恢复。
+    """
+    before = _digest(_LIVE_CMDB)
+    yield
+    after = _digest(_LIVE_CMDB)
+    if before != after:
+        pytest.fail(
+            f"测试改动了包内实体文件（活数据）：{_LIVE_CMDB}\n"
+            f"  会话前 sha256: {before}\n"
+            f"  会话后 sha256: {after}\n"
+            f"这几乎总是某个夹具没生效（参数名拼错？settings 缓存没清？），"
+            f"导致写操作落到了真文件上。请 `git diff` 该文件确认改了什么。",
+            pytrace=False,
+        )
 
 #: 冻结的迁移基线：`cmdb.py` 字面量 → JSON 实体文件那次迁移的**产物快照**。
 #:

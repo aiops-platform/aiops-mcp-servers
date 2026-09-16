@@ -366,7 +366,7 @@ def test_admin_rejects_bad_json_with_400(env, cmdb, monkeypatch, clear_settings_
     assert r.status_code == 400
 
 
-def test_write_preserves_file_mode(cmbd=None) -> None:
+def test_write_preserves_file_mode(cmdb) -> None:
     """保存**不得**改变文件权限位。
 
     ``tempfile.mkstemp`` 建出来的是 0600，而 ``os.replace`` 会把临时文件的模式带到
