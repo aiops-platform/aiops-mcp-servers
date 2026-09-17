@@ -33,6 +33,20 @@
     `repo_by_app` 是 1:1 的 dict，多条边会让**后出现的那条静默胜出**、结果只取决于
     边在文件里的顺序；`locate_repo` 指错仓库比找不到仓库危害大。见 docs §7 第 12 条
 
+### Fixed
+
+- **`query_logs` 的 `total` 把「返回条数」当成「命中条数」**（`aiops-datasource-mcp-server`）
+  - `_search` 只返回 `hits.hits`、把 `hits.total` 整个丢掉，于是 `total` 实际是
+    `len(logs)`。真实系统里一小时可能有百万条日志，agent 看到 `total: 8` 会得出
+    「窗口内只有 8 条」，而真相是「从一大堆里截了 8 条」——**返回体里没有任何字段
+    能看出被截断了**
+  - 现在返回 `total`（真实命中数）/ `total_relation`（`gte` = 超统计上限，total 是**下界**）
+    / `returned`（本次返回条数）/ `has_more`；`hits.total` 缺失即报错，**不用默认值兜底**
+  - **`by_service` / `by_level` 改为 terms 聚合**：早先是遍历返回的几十条现数，于是
+    「服务分布」其实是「前 N 条里的分布」，不在前 N 条里的服务被系统性漏掉
+  - 测试的 mock 一并改真实（原先只造 `hits.hits`，**比被测代码还宽松**——
+    这正是缺陷溜过测试的原因）
+
 ### Added
 
 - **`infer_candidate_services` 业务域消歧**（`aiops-datasource-mcp-server`）

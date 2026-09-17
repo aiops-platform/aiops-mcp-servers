@@ -170,7 +170,15 @@ def _build_query_logs():
     ) -> dict:
         """按**时间窗口**检索应用日志（Elasticsearch）。
 
-        时间区间必填；可按服务与级别过滤。返回日志明细、服务分布与该窗口。
+        时间区间必填；可按服务与级别过滤。
+
+        ## 怎么读返回体
+
+        - `total` 是**真实命中数**；`total_relation="gte"` 时它是**下界**（超过 10000 条
+          的统计上限）。**`returned` 才是本次返回的条数**——两者不要混。早先 `total`
+          其实是返回条数，agent 据此得出过"窗口内只有 8 条"的错误结论。
+        - `by_service` / `by_level` 是 **terms 聚合**算出的**全量**分布，不受返回条数
+          影响。想知道"哪些服务在报错、各多少条"，看这两个就够了。
         """
         start, end = _parse_window(start_time, end_time)
         return await es.query_logs(start, end, service=service, level=level, limit=limit)
