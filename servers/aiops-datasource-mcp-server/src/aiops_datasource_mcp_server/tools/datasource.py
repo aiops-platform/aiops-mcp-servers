@@ -159,29 +159,39 @@ def _build_query_logs():
         start_time: StartTime,
         end_time: EndTime,
         service: Annotated[
-            str | None, Field(description="服务名过滤（如 warranty-service）；不传则全服务")
+            str | None,
+            Field(description="服务名过滤（如 warranty-service）。**与 level 至少给一个**"),
         ] = None,
         level: Annotated[
-            str | None, Field(description="日志级别过滤，如 ERROR / WARN / INFO")
+            str | None,
+            Field(description="日志级别过滤，如 ERROR / WARN / INFO。**与 service 至少给一个**"),
         ] = None,
+        offset: Annotated[
+            int, Field(ge=0, description="分页起点（默认 0）。offset+limit 不得超过 10000")
+        ] = 0,
         limit: Annotated[
-            int, Field(ge=1, le=200, description="最多返回条数（1-200，默认 50）")
+            int, Field(ge=1, le=200, description="本页最多返回条数（1-200，默认 50）")
         ] = 50,
     ) -> dict:
-        """按**时间窗口**检索应用日志（Elasticsearch）。
+        """按**时间窗口 + 至少一个选择性条件**检索应用日志（Elasticsearch）。
 
-        时间区间必填；可按服务与级别过滤。
+        ⚠️ **时间区间是「范围」不是「选择」**——它不缩小结果集，只圈定"哪一段"。
+        真实系统里一小时也能有 GB 级日志，所以 `service` / `level` **至少要给一个**，
+        否则直接报错（不会"顺手"把整个窗口拉出来）。
 
         ## 怎么读返回体
 
         - `total` 是**真实命中数**；`total_relation="gte"` 时它是**下界**（超过 10000 条
-          的统计上限）。**`returned` 才是本次返回的条数**——两者不要混。早先 `total`
-          其实是返回条数，agent 据此得出过"窗口内只有 8 条"的错误结论。
-        - `by_service` / `by_level` 是 **terms 聚合**算出的**全量**分布，不受返回条数
-          影响。想知道"哪些服务在报错、各多少条"，看这两个就够了。
+          的统计上限）。**`returned` 才是本次返回的条数**——两者不要混。
+        - `by_service` / `by_level` 是 **terms 聚合**算出的**全量**分布，不受分页影响。
+          想知道"哪些服务在报错、各多少条"，看这两个就够了，**不必翻页**。
+        - `has_more` / `offset`：要继续取用 `offset` 翻页，但**别靠深翻页取全量**
+          （10000 条上限），要缩小范围请加筛选或缩时间窗。
         """
         start, end = _parse_window(start_time, end_time)
-        return await es.query_logs(start, end, service=service, level=level, limit=limit)
+        return await es.query_logs(
+            start, end, service=service, level=level, offset=offset, limit=limit
+        )
 
     return query_logs
 

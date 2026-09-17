@@ -90,6 +90,10 @@ async def _search(
     }
 
 
+#: ES 默认 ``index.max_result_window``。``from + size`` 超过它会被 ES 拒绝，
+#: 且报错难懂——这里提前挡住，并给出可操作的话。
+_MAX_RESULT_WINDOW = 10_000
+
 #: ``track_total_hits`` 上限。超过它 ES 返回 ``relation="gte"``，即 total 是**下界**。
 #: 必须把 relation 如实透出——把下界当精确值，正是本函数要修的那类"看着正常的错答案"。
 _TRACK_TOTAL_HITS = 10_000
@@ -115,10 +119,17 @@ async def query_logs(
     *,
     service: str | None = None,
     level: str | None = None,
+    offset: int = 0,
     limit: int = 50,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> dict:
-    """按时间窗口检索日志（可选 service / level 过滤）。
+    """按**时间窗口 + 至少一个选择性条件**检索日志（带分页）。
+
+    ## 「时间区间」是**范围**，不是**选择**
+
+    它不缩小结果集，只圈定"哪一段"。真实系统里几十个服务、一小时也能有 GB 级日志，
+    只给窗口等于要求全量扫描。所以 ``service`` / ``level`` **至少要给一个**——
+    否则 fail-closed，并说清该补什么。
 
     ## 「返回了几条」与「命中了多少条」是两件事
 
@@ -127,6 +138,20 @@ async def query_logs(
     是**全量**分布，不受分页影响——调用方问"哪些服务在报错、各多少条"，
     一次就能拿到准确答案，不必翻页。
     """
+    if not service and not level:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST,
+            "query_logs 需要至少一个选择性条件：service 或 level。"
+            "只给时间区间不是筛选——它不缩小结果集，真实系统里一小时也可能有百万条日志。"
+            "（若确实要看某窗口的全景，请先用 service 逐个查，或加 level 收窄。）",
+        )
+    if offset + limit > _MAX_RESULT_WINDOW:
+        raise AppError(
+            ErrorCode.INVALID_REQUEST,
+            f"offset+limit（{offset}+{limit}）超过 ES 的 {_MAX_RESULT_WINDOW} 条上限。"
+            f"请缩短时间窗或加更细的筛选，**不要靠深翻页**取全量。",
+        )
+
     def _body(field_prefix: str, time_filter: dict, sort_field: str) -> dict:
         filters: list[dict] = [time_filter]
         if service:
@@ -134,6 +159,7 @@ async def query_logs(
         if level:
             filters.append({"term": {f"{field_prefix}level.keyword": level.upper()}})
         return {
+            "from": offset,
             "size": limit,
             "track_total_hits": _TRACK_TOTAL_HITS,
             "sort": [{sort_field: "desc"}],
@@ -148,8 +174,7 @@ async def query_logs(
                             "query_logs", transport)
 
     # 二级兜底：**app.* 布局窗口内零命中**时，试顶层字段布局（不同日志源布局不同）。
-    # ⚠️ 判据是 total == 0，不能是"没有 hits"——否则"窗口内确实没数据"与
-    #    "有数据但没取到"就分不开了。
+    # ⚠️ 判据是 total == 0，不是"本页没有 hits"——后者会让第 2 页空页误触发兜底。
     if payload["total"]["value"] == 0:
         alt = await _search(_body("", _time_range_alt(start, end), "@timestamp"),
                             "query_logs", transport)
@@ -169,7 +194,8 @@ async def query_logs(
         #: eq = 精确；gte = 超过 track_total_hits 上限，total 是**下界**
         "total_relation": total_relation,
         "returned": len(logs),
-        "has_more": len(logs) < total_value,
+        "offset": offset,
+        "has_more": offset + len(logs) < total_value,
         "window": {"start": start.isoformat(), "end": end.isoformat()},
         "filter": {"service": service, "level": level},
         #: **全量**分布（terms 聚合），不是"本页 N 条里的分布"
@@ -178,7 +204,7 @@ async def query_logs(
         "logs": logs,
         "summary": (
             f"窗口内命中 {total_txt} 条，本次返回 {len(logs)} 条"
-            f"（{'还有更多' if len(logs) < total_value else '已全部返回'}）"
+            f"（offset={offset}，{'还有更多' if offset + len(logs) < total_value else '已到底'}）"
             + (f"；服务分布（全量）：{dist}" if dist else "")
         ),
     }

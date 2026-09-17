@@ -33,6 +33,15 @@
     `repo_by_app` 是 1:1 的 dict，多条边会让**后出现的那条静默胜出**、结果只取决于
     边在文件里的顺序；`locate_repo` 指错仓库比找不到仓库危害大。见 docs §7 第 12 条
 
+### Added
+
+- **`query_logs` 强制选择性条件 + 分页**（`aiops-datasource-mcp-server`）
+  - **`service` / `level` 至少给一个**，否则 `INVALID_REQUEST`。理由：**「时间区间」是
+    「范围」不是「选择」**——它不缩小结果集，只圈定"哪一段"；真实系统里几十个服务、
+    一小时也能有 GB 级日志，只给窗口等于要求全量扫描
+  - `offset` / `limit`（`offset+limit > 10000` 提前挡住并给可操作指引，不让 ES 抛难懂的错）
+  - 工具描述写明怎么读 `total` / `returned` / `by_service`，以及"别靠深翻页取全量"
+
 ### Fixed
 
 - **`query_logs` 的 `total` 把「返回条数」当成「命中条数」**（`aiops-datasource-mcp-server`）
