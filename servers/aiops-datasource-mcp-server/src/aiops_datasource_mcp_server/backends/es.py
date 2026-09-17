@@ -167,6 +167,14 @@ async def query_logs(
             "aggs": {
                 "svc": {"terms": {"field": f"{field_prefix}service.keyword", "size": _AGG_BUCKETS}},
                 "lvl": {"terms": {"field": f"{field_prefix}level.keyword", "size": 10}},
+                # **来自哪段代码**。这是"失败模式"最便宜也最稳定的近似：
+                # 实测它能把"业务代码抛的"与"容器/Servlet 包装的"分开——代价是同一个
+                # 失败会被劈成两组（两条的 stack_trace 首行其实相同）。真正的失败模式
+                # 归一化要从自由文本提取，服务端做不到可靠的**全量**分组（terms agg 只能
+                # 对已归一化字段做，而 runtime field 每次现算且脚本耦合）。故给到这一层，
+                # 归并交给模型，并在描述里标明它是近似的。
+                "lgr": {"terms": {"field": f"{field_prefix}logger_name.keyword",
+                                  "size": _AGG_BUCKETS}},
             },
         }
 
@@ -186,6 +194,7 @@ async def query_logs(
     logs = [_extract(h) for h in payload["hits"]]
     by_service = _buckets(payload["buckets"], "svc", field="service")
     by_level = _buckets(payload["buckets"], "lvl", field="level")
+    by_logger = _buckets(payload["buckets"], "lgr", field="logger")
 
     total_txt = f"{total_value}{'+' if total_relation == 'gte' else ''}"
     dist = "、".join(f"{b['service']} {b['count']}" for b in by_service[:5])
@@ -201,6 +210,9 @@ async def query_logs(
         #: **全量**分布（terms 聚合），不是"本页 N 条里的分布"
         "by_service": by_service,
         "by_level": by_level,
+        #: **来自哪段代码**（logger 名）。"失败模式"的**近似**——同一失败可能因
+        #: 容器包装而分成两组，**归并请你自己判断**，不要当成精确的模式划分。
+        "by_logger": by_logger,
         "logs": logs,
         "summary": (
             f"窗口内命中 {total_txt} 条，本次返回 {len(logs)} 条"

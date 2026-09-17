@@ -292,3 +292,33 @@ async def test_fallback_triggers_on_zero_total_not_empty_page(env) -> None:
                               transport=httpx.MockTransport(handler))
     assert len(calls) == 1, "total>0 时不该再去试顶层布局"
     assert out["total"] == 100
+
+
+async def test_by_logger_is_full_aggregation(env) -> None:
+    """`by_logger` 走 terms 聚合，是**全量**分布——用来判断"错误来自哪段代码"。
+
+    实测它能分开「业务代码抛的」与「容器/Servlet 包装的」。**但它只是失败模式的近似**：
+    同一个失败会被劈成两组（两条的 stack_trace 首行其实相同），所以描述里写明了
+    "归并请自己判断"，不冒充精确的模式划分。
+    """
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_hits(
+            {"app": {"service": "order-service", "level": "ERROR", "message": "x"}},
+            total=16,
+            aggs={
+                "svc": {"buckets": [{"key": "order-service", "doc_count": 16}]},
+                "lvl": {"buckets": [{"key": "ERROR", "doc_count": 16}]},
+                "lgr": {"buckets": [
+                    {"key": "com.company.order.service.QuotationService", "doc_count": 8},
+                    {"key": "org.apache.catalina.core.ContainerBase.dispatcherServlet",
+                     "doc_count": 8},
+                ]},
+            },
+        ))
+
+    out = await es.query_logs(START, END, level="ERROR",
+                              transport=httpx.MockTransport(handler))
+    assert out["by_logger"] == [
+        {"logger": "com.company.order.service.QuotationService", "count": 8},
+        {"logger": "org.apache.catalina.core.ContainerBase.dispatcherServlet", "count": 8},
+    ]
