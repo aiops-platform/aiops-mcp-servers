@@ -58,8 +58,11 @@ def _build_fastmcp():
             "本 server 不提供无窗口的全量查询——诊断应聚焦故障发生的那一段时间。\n"
             f"Prometheus 指标为领域语义（非 PromQL 表达式），可用："
             f"{', '.join(available_metrics())}。\n"
-            "所有工具均为只读查询，返回 {success, ...} 结构；无数据时字段为 null，"
-            "不要当成 0。"
+            "查询类工具均为只读，返回 {success, ...} 结构；无数据时字段为 null，"
+            "不要当成 0。\n"
+            "**唯一的写工具是 `returnApmTicketStatus`**（把处置结果回传原系统、更新"
+            "工单状态）。它失败时返回 success=false —— **此时必须如实上报未投递**，"
+            "不要当成功。"
         ),
         # Origin/Host 防护由部署侧（nginx/网关）承担，关闭 FastMCP 内建防护避免双重校验
         "transport_security": TransportSecuritySettings(enable_dns_rebinding_protection=False),

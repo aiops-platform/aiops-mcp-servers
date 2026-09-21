@@ -57,17 +57,28 @@ def test_health(env) -> None:
         assert r.json()["service"] == "aiops-datasource-mcp-server"
 
 
-def test_tools_list_exposes_all_read_only(env) -> None:
+def test_tools_list_exposes_expected_tools_with_correct_read_only_flag(env) -> None:
+    """`/mcp` 暴露的工具集合，以及**各自的只读注解**。
+
+    `readOnlyHint` 不是装饰性元数据：agent 侧（AgentScope）据此自动 ALLOW。
+    所以这条按名字逐个断言，**不能**写成"全都是只读"——那在加进第一个写工具
+    （`returnApmTicketStatus`）当天就会红，而正确的反应是把它挑出来，
+    不是把断言放宽。
+    """
     with _client(env) as c:
-        tools = _list_tools(c, _init(c))
-    names = {t["name"] for t in tools}
-    assert names == {
+        tools = {t["name"]: t for t in _list_tools(c, _init(c))}
+
+    read_only = {
         "query_logs", "get_trace", "query_metrics", "check_infra", "describe_pod",
         "get_service_topology", "locate_repo",
         "query_entity_graph", "infer_candidate_services",
     }
-    # 只读注解：agent 侧（AgentScope）据此自动 ALLOW
-    assert all(t["annotations"]["readOnlyHint"] is True for t in tools)
+    assert set(tools) == read_only | {"returnApmTicketStatus"}
+
+    for name in read_only:
+        assert tools[name]["annotations"]["readOnlyHint"] is True, f"{name} 应只读"
+    # 写工具必须显式标非只读，否则模型无需授权就能 POST 到外部系统
+    assert tools["returnApmTicketStatus"]["annotations"]["readOnlyHint"] is False
 
 
 def test_time_window_is_required_in_schema(env) -> None:

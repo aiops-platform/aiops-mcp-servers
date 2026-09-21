@@ -69,6 +69,17 @@ class Settings(BaseSettings):
     # 它不该因为"部署时忘了关"而暴露。要开就显式开。见 admin_enabled。
     datasource_admin_enabled: bool | None = None
 
+    # --- APM 工单回传（`returnApmTicketStatus`，本 server 唯一的对外写面）---
+    # 回传的「谓词 + URI」在这里配 —— **不由 agent 传**。回调地址是**部署属性**，
+    # 不是这次 run 的属性：让 agent 传等于让 LLM 决定往哪儿 POST，且同一原系统
+    # 每张工单都要重传一遍，传错/漏传就静默投不出去。agent 只给三个业务字段。
+    #
+    # **空 = 未配置 ⇒ 工具 fail-closed 报错**，绝不假装投递成功。
+    # 例：DATASOURCE_APM_TICKET_URL=https://apm.internal/api/v1/incidents/callback
+    datasource_apm_ticket_url: str = ""
+    # 谓词。原系统的回调端点若不是 POST，在这里改（GET 无 body，一般不用）。
+    datasource_apm_ticket_method: str = "POST"
+
     # --- 请求与配额 ---
     # 单次上游请求超时（秒）
     datasource_request_timeout_sec: float = Field(default=30.0, gt=0)

@@ -25,7 +25,9 @@ Prometheus 指标、Kubernetes 状态暴露为**领域型只读工具**。
   不提供 `promql:`/`cadvisor:` 透传（刻意的收紧）
 - **无数据 ≠ 0**：容器未设 limit 时百分比无定义，返回 `null` + 归因提示，
   而不是把 `+Inf`/`NaN` 当真实数字（那会被 agent 读成"内存爆了"）
-- 全部工具标注 `readOnlyHint=True`（agent 侧据此自动 ALLOW）
+- **查询工具**标注 `readOnlyHint=True`（agent 侧据此自动 ALLOW）；唯一的写工具
+  `returnApmTicketStatus` 标 `False` —— 注解决定的是**授权**，把写工具标成只读
+  等于让它无需授权就能 POST 到外部系统
 - 上游失败归一为结构化结果 + 流式按字节截断（码点边界安全，截断**显式可见**）
 - 可选 MCP Bearer 认证；`/health` 存活探针
 
@@ -42,6 +44,16 @@ Prometheus 指标、Kubernetes 状态暴露为**领域型只读工具**。
 | `locate_repo` | 无（静态图谱） | `service`(必填) | CMDB 实体图谱 |
 | `query_entity_graph` | 无（静态图谱） | `node_types`/`portfolios`/`key_attributes`/`edge_types`/`node_id`+`hops` | CMDB 实体图谱（全 13 类边） |
 | `infer_candidate_services` | 无（静态图谱） | `problem`(必填)、`services`(强烈建议)、`namespaces`、`max_hops`、`limit` | CMDB 实体图谱 + 推断 |
+
+**写工具**（唯一一个，`readOnlyHint=False`）：
+
+| 工具 | 入参 | 去向 |
+|---|---|---|
+| `returnApmTicketStatus` | `ticket_id`、`status`（`resolved`\|`failed`\|`insufficient`）、`description` | 配置的回调地址 |
+
+> 「谓词 + URI」由 server 侧 `DATASOURCE_APM_TICKET_URL` / `..._METHOD` 配置，
+> **不由 agent 传**——回调地址是部署属性，不是这次 run 的属性；让 agent 传等于让
+> 模型决定往哪儿 POST。**未配置 ⇒ 工具报错**（fail-closed），绝不假装投递成功。
 
 > **CMDB 图谱**（后四个）查的是**静态实体图谱**（谁调谁、归属哪个业务域/仓库、有哪些事件），
 > 不是运行时观测数据。数据来自实体文件 `data/cmdb-entities.json`——**它是 CMDB 的唯一载体**，
@@ -101,7 +113,8 @@ cp .env.example .env
 uv run python -m aiops_datasource_mcp_server     # 默认 http://127.0.0.1:8300
 ```
 
-启动日志会打印已注册工具：`registered 9 tools: query_logs, get_trace, ...`
+启动日志会打印已注册工具及各自是否只读：
+`registered tool query_logs (read_only=True)` … `registered tool returnApmTicketStatus (read_only=False)`
 
 ## 配置项（.env / 环境变量）
 
@@ -124,6 +137,8 @@ uv run python -m aiops_datasource_mcp_server     # 默认 http://127.0.0.1:8300
 | `DATASOURCE_CMDB_PATH` | (空) | **CMDB 实体图谱文件（CMDB 的唯一载体）**；空 = 用包内 `data/cmdb-entities.json`（与 cwd 无关）。**缺失即 fail-closed 报错**——不返回空图 |
 | `DATASOURCE_INCIDENTS_PATH` | (空) | 可选的事件覆盖文件（Incident / Change）；空 = **暂无事件数据（合法状态）**。配了路径却读不到才算配置错误。OTR 租户的用 `data/cmdb-incidents-otr.json` |
 | `DATASOURCE_ADMIN_ENABLED` | (未设置) | CMDB 写端点（`/admin/cmdb/**`）开关。未设置 = development 开、**production 关**；打开了 `production` 下强制要有 `AUTH_TOKEN` |
+| `DATASOURCE_APM_TICKET_URL` | (空) | `returnApmTicketStatus` 回传的 **URI**。**空 = 未配置 ⇒ 该工具 fail-closed 报错**（不假装投递成功） |
+| `DATASOURCE_APM_TICKET_METHOD` | `POST` | 回传的**谓词**。原系统回调端点不是 POST 时在这里改 |
 | `DATASOURCE_REQUEST_TIMEOUT_SEC` | `30.0` | 单次上游请求超时 |
 | `DATASOURCE_MAX_RESPONSE_BYTES` | `1048576` | 单次返回字节上限（超出流式截断并标注） |
 | `DATASOURCE_MAX_RANGE_HOURS` | `24` | 单次查询最大时间跨度（防全量扫描） |
