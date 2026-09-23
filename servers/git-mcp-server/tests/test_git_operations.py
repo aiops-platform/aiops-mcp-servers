@@ -103,6 +103,25 @@ def test_search_code_no_match_returns_empty(allowed_env):
     assert out["count"] == 0
 
 
+def test_search_code_query_is_ere_so_alternation_works(allowed_env):
+    """查询按 **POSIX ERE** 解释：``a|b`` 是交替，不是字面量。
+
+    这条测的是一个**静默**失效模式，不是"能不能搜到"：``git grep`` 默认走 BRE，
+    ``|`` 在那里是普通字符，于是 ``hello|alpha`` 会去找字面量 ``hello|alpha``
+    —— **0 条命中、也不报错**。调用方（``code-locator``）据此认定"仓库里没有"，
+    换关键词再来，把轮数耗光 → ``locate`` 判负 → ``halt`` → 整条诊断中断。
+
+    实测（2026-09-23，run_a5ab9555a3）：三条交替查询
+    （``print|export|Print|Export``、``indexOf|substring|charAt|…``（这条还因括号不平衡
+    直接 exit 128）、``generateQuotation|renderItems|composeQuotation``）全部返回 0 条，
+    而同仓 ``git grep -E`` 立刻有命中。所以断言刻意取"两个文件都命中"：
+    若退回 BRE，这条会以 count == 0 失败（而不是碰巧仍为 2）。
+    """
+    out = _build_search()(repo_path=_repo_path(allowed_env), query="hello|alpha")
+    assert out["count"] == 2, out
+    assert {m["file"] for m in out["matches"]} == {"a.txt", "sub/b.txt"}
+
+
 # ---------------------------------------------------------------- blame
 def test_blame_file(allowed_env):
     out = _build_blame()(

@@ -105,6 +105,75 @@ async def test_query_logs_normalizes_hits(env) -> None:
     assert out["window"]["start"] == START.isoformat()
 
 
+async def test_query_logs_returns_stack_trace_for_code_location(env) -> None:
+    """`logs[].stack_trace` 必须返回 —— 它是**定位代码的唯一依据**。
+
+    此前 `_extract` 把它整个丢掉，`code-locator` 只能拿 `message[:500]` 猜；而 Spring 的
+    "Servlet.service() for servlet [dispatcherServlet]…" 前缀对**所有**异常都一样，真正的异常
+    类型落在截断之外 → 无栈帧可用 → 反复关键词搜仓库 → ReAct 轮次耗尽 → `found: false` → halt
+    （实测 `run_a7e825f855`）。
+    """
+    stack = (
+        'java.lang.NumberFormatException: For input string: ""\n'
+        "\tat java.base/java.lang.Long.parseLong(Unknown Source)\n"
+        "\tat com.company.order.service.QuotationService.formatDeliveryDate"
+        "(QuotationService.java:184)\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_hits(
+            {"app": {"@timestamp": "t1", "level": "ERROR", "service": "order-service",
+                     "traceId": "tr-1", "message": "unhandled exception: GET /quotation",
+                     "stack_trace": stack}},
+        ))
+
+    out = await es.query_logs(START, END, service="order-service",
+                              transport=httpx.MockTransport(handler))
+    got = out["logs"][0]["stack_trace"]
+    assert "NumberFormatException" in got          # 异常类型
+    assert "QuotationService.java:184" in got      # 定位到 文件:行 靠的就是这一帧
+
+
+async def test_query_logs_marks_truncated_stack_trace(env) -> None:
+    """超长栈要截断，但**必须显式标注** —— 静默截断会被 agent 读成"栈就到这里"。
+
+    注意长度：`env` fixture 把 `DATASOURCE_MAX_RESPONSE_BYTES` 压到 4096，**超限不是"少给几条"，
+    而是响应被截成残文、`_search` 直接报 "ES 返回非 JSON"**。所以这里是"超 `_STACK_TRACE_MAX`
+    但整页仍在 4KB 内"，不是随便造个巨大响应。
+    """
+    long_stack = "\n".join(
+        f"\tat com.company.order.Foo.frame{i}(Foo.java:{i})" for i in range(60)
+    )
+    assert 2000 < len(long_stack) < 4000  # 超单条上限，但整页不触响应上限
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_hits(
+            {"app": {"@timestamp": "t1", "level": "ERROR", "service": "order-service",
+                     "message": "boom", "stack_trace": long_stack}},
+        ))
+
+    out = await es.query_logs(START, END, service="order-service",
+                              transport=httpx.MockTransport(handler))
+    got = out["logs"][0]["stack_trace"]
+    assert len(got) < len(long_stack)
+    assert "已截断，原文共" in got, "截断必须留痕，否则 agent 会把残缺当完整"
+    assert f"{len(long_stack)} 字符" in got
+
+
+async def test_query_logs_stack_trace_is_empty_when_source_has_none(env) -> None:
+    """源里本就不带堆栈 → 空串（**不是缺键**）。agent 据此如实说"无法定位"，而不是靠猜。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_hits(
+            {"app": {"@timestamp": "t1", "level": "INFO", "service": "order-service",
+                     "message": "no stack here"}},
+        ))
+
+    out = await es.query_logs(START, END, service="order-service",
+                              transport=httpx.MockTransport(handler))
+    assert out["logs"][0]["stack_trace"] == ""
+
+
 async def test_get_trace_prefers_root_cause_over_downstream_symptom(env) -> None:
     """故障 span 判定：order-service 报 Feign 超时是**下游症状**，根因在 warranty-service。"""
 

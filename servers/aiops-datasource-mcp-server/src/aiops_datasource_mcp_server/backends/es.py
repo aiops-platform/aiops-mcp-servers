@@ -37,16 +37,45 @@ def _time_range_alt(start: datetime, end: datetime) -> dict:
     return {"range": {"@timestamp": {"gte": start.isoformat(), "lte": end.isoformat()}}}
 
 
+#: 返回给 agent 的 ``stack_trace`` 上限（字符）。
+#:
+#: `stack_trace` 是**定位代码的唯一依据**（异常类型 + 栈帧），而它此前被 `_extract` 整个丢掉，
+#: 于是 `code-locator` 只能拿 `message[:500]` 去猜——而 Spring 的
+#: "Servlet.service() for servlet [dispatcherServlet] …" 前缀对**所有**异常都一样，
+#: 真正的异常类型在 500 字符之外就被截掉了。后果实测过（`run_a7e825f855`）：agent 无栈帧可用 →
+#: 转为在仓库里搜 `"Index"` / `"split("` 这类关键词 → 无收敛判据 → ReAct 轮次耗尽 →
+#: `locate` 产负证据（`found: false`）→ **命中 `locate → halt`，整条诊断中断**。
+#:
+#: 上限取值：栈顶若干帧就够定位业务代码（Apm 侧签名只用首行 + 3 帧），2000 字符 ≈ 20~30 帧。
+#: **截断时显式标注**——静默截断正是本项目反复踩的那类坑（agent 会把它读成"栈就到这里"）。
+#:
+#: ⚠️ 加了它之后单页响应会大一个量级，注意与 `datasource_max_response_bytes`（默认 1MB）的余量：
+#: 满页 200 条 × (2000 栈 + 500 message + 开销) ≈ 540KB，仍在限内；**但超限不是"少给几条"，
+#: 而是响应被截成残文、`_search` 直接报"ES 返回非 JSON"**（`backends/http.py` 的截断分支）。
+_STACK_TRACE_MAX = 2000
+
+
+def _clip(text: str, limit: int) -> str:
+    """按字符截断，并在**截断时显式标注**（不静默丢尾部）。"""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…【已截断，原文共 {len(text)} 字符】"
+
+
 def _extract(hit: dict) -> dict:
     """把一条 ES hit 归一成扁平日志记录（兼容 app.* 与顶层两种布局）。"""
     src = hit.get("_source", {}) or {}
     app = src.get("app") or {}
+    stack = str(app.get("stack_trace") or src.get("stack_trace") or "")
     return {
         "@timestamp": app.get("@timestamp") or src.get("@timestamp"),
         "level": app.get("level") or src.get("level"),
         "service": app.get("service") or src.get("service"),
         "trace_id": app.get("traceId") or app.get("trace_id") or src.get("traceId"),
         "message": str(app.get("message") or src.get("message") or "")[:500],
+        #: 异常类型 + 栈帧。**定位代码靠它**，不要只看 message（见 `_STACK_TRACE_MAX`）。
+        #: 源里没有就是空串（该源本就不带堆栈），不是"拉取失败"。
+        "stack_trace": _clip(stack, _STACK_TRACE_MAX),
     }
 
 

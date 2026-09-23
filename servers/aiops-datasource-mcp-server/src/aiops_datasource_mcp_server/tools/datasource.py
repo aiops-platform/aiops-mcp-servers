@@ -186,6 +186,10 @@ def _build_query_logs():
         - `by_service` / `by_level` / `by_logger` 是 **terms 聚合**算出的**全量**分布，
           不受分页影响。想知道"哪些服务在报错、各多少条、来自哪段代码"，看它们就够了，
           **不必翻页**。
+        - **要定位到代码就看 `logs[].stack_trace`**（异常类型 + 栈帧；超长会截断并**显式标注**）。
+          它比 `message` 有用得多：Spring 的 `"Servlet.service() for servlet [dispatcherServlet]…"`
+          前缀对**所有**异常都一样，真正的异常类型常落在 `message` 的截断之外。
+          源里本就不带堆栈时它是空串——那时**不要靠关键词猜文件名**，如实说明无法定位。
         - ⚠️ `by_logger` 只是**失败模式的近似**：同一个失败可能因容器包装被劈成两组
           （业务代码一条、Servlet 一条，两者的 stack_trace 首行其实相同）。**归并请自己判断**，
           不要当成精确的模式划分。

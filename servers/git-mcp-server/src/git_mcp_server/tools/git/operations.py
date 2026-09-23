@@ -236,18 +236,34 @@ def _build_search():
     def search_code(
         repo_path: StatusType,
         query: Annotated[
-            str, Field(min_length=1, description="Text pattern to search (git grep regex)")
+            str,
+            Field(
+                min_length=1,
+                description=(
+                    "Text pattern to search — POSIX **ERE** (`git grep -E`): "
+                    "`a|b` IS alternation, `.` matches any char, `\\b`/`\\s` work as usual"
+                ),
+            ),
         ],
         path: Annotated[
             str, Field(description="Optional sub-path to restrict search within")
         ] = "",
         case_sensitive: Annotated[bool, Field(description="Case-sensitive match")] = False,
     ) -> dict:
-        """在受跟踪文件中全文搜索（git grep），返回 file:line:column:content。"""
+        """在受跟踪文件中全文搜索（``git grep -E``），返回 file:line:column:content。
+
+        ⚠️ ``-E`` 不是口味问题：**默认的 BRE 会把 ``|`` 当普通字符**，于是调用方最常写的
+        ``print|export|Print|Export`` 这种交替查询返回 0 条且**不报错**（静默吞掉）——
+        它据此以为"仓库里没有"，接着换关键词，把轮数耗光。实测 2026-09-23（run_a5ab9555a3）：
+        ``code-locator`` 的三条交替查询全部静默 0 条（其中一条还因括号不平衡 exit 128），
+        而它第 8 步读到的文件**已经是对的**——只因提示词要求"以 search_code 的返回为准"，
+        它不敢收口，最终 10 轮耗尽 → ``locate`` 判负 → ``halt`` → 整条诊断中断。
+        同仓验过：BRE 空、加 ``-E`` 命中 29 条。别退回去。
+        """
         repo = require_repo(repo_path)
         executor = GitExecutor(repo, tool="search_code")
         executor.ensure_git_repo()
-        args = ["grep", "-n", "--column"]
+        args = ["grep", "-n", "--column", "-E"]
         if not case_sensitive:
             args.append("-i")
         args.append("--end-of-options")
