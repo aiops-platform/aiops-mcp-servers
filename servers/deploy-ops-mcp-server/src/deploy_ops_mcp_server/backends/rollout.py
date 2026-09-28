@@ -1,4 +1,7 @@
-"""把某个 Deployment 滚到指定镜像 —— 本 server 的**全部**业务。
+"""把某个 Deployment 滚到指定镜像。
+
+⚠️ 本 server 有**两个**业务模块：这个负责**滚上去**，`probe.py` 负责**验它跑起来能响应**。
+两者共用本模块的 CLI 封装（`_kubectl` / `_read_running_pods` / `_check_name` / `_normalize_ref`）。
 
 ## 三步之内的分工
 

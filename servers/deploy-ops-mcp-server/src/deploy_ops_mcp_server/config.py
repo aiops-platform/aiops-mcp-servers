@@ -58,8 +58,14 @@ class Settings(BaseSettings):
     #    要把镜像（产物 35MB + 基础层 415MB）灌进节点 containerd，冷启动分钟级。
     #    实测值待补（见 DEPLOY_NODE_PLAN_zh-CN.md §6 风险 4）。
     deploy_ops_image_load_timeout_sec: float = Field(default=900.0, gt=0)
-    # 启动自检的探针超时（要短：起不来就赶紧报，别让人等半分钟）
+    # 启动自检的超时（要短：起不来就赶紧报，别让人等半分钟）
     deploy_ops_probe_timeout_sec: float = Field(default=15.0, gt=0)
+    # --- `probe_service` 的两个超时 ---
+    # `kubectl port-forward` 从起到可连的上限。实测秒级（日志出现 `Forwarding from` 后 4s 内可打），
+    # 给 20s 是给冷启动留余量；超了 ⇒ `forward_failed`，**不留下进程**。
+    deploy_ops_forward_ready_timeout_sec: float = Field(default=20.0, gt=0)
+    # 单条 HTTP 探针的请求超时。
+    deploy_ops_probe_http_timeout_sec: float = Field(default=10.0, gt=0)
 
     # --- 响应 ---
     # 单次工具返回字节上限（超过截断并标注）

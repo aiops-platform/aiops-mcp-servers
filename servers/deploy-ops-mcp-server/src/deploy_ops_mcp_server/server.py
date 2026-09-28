@@ -48,11 +48,17 @@ def _build_fastmcp():
         "name": "deploy-ops-mcp-server",
         "json_response": True,
         "instructions": (
-            "集群发布工具。**本 server 只做一件事：把某个 Deployment 滚到指定镜像，"
-            "并如实回报结果。**\n"
+            "集群发布工具。**本 server 做两件事：把某个 Deployment 滚到指定镜像，"
+            "以及验证滚上去的那个 pod 真的能响应。**\n"
             "· `get_deployment_status(service)` —— 只读，读**从 pod 上取回**的镜像；\n"
             "· `rollout_deployment(service, image)` —— **写操作**，会真的改线上：\n"
             "  装镜像进节点 → set image → 等滚动 → 回读 pod 的镜像。\n"
+            "· `probe_service(service, image, path, expect, broken_expect)` —— 只读："
+            "对**正在跑这个 image 的那个 pod** 起一次临时 port-forward 打冒烟、探完即 kill。"
+            "健康层的路径与端口**从 Deployment 自己的探针声明里读**，业务层由调用方给"
+            "（留空 = 只探存活，返回 `coverage: health_only`）。\n"
+            "  ⚠️ 打旧 pod 得到的 200 **什么都不证明** ⇒ 没有「正在跑该镜像的 pod」时它"
+            "**一次 HTTP 都不发**，直接返回 `pod_not_found`。`passed: false` 必须如实上报。\n"
             "**部署目标（namespace/deployment/container）由本 server 自己持有**，"
             "调用方只给 `service` 与 `image` —— 不要试图传命名空间。\n"
             "`success: false` 时**必须如实上报未部署**：滚不上去而工单报「已解决」，"

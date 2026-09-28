@@ -11,7 +11,7 @@ from typing import Annotated
 
 from pydantic import Field
 
-from deploy_ops_mcp_server.backends import rollout
+from deploy_ops_mcp_server.backends import probe, rollout
 
 _SERVICE_DESC = (
     "服务名（如 order-service）。本 server 按它查自己的部署目标表得到 "
@@ -61,9 +61,55 @@ def _build_get_deployment_status():
     return get_deployment_status
 
 
+def _build_probe_service():
+    async def probe_service(
+        service: Annotated[str, Field(description=_SERVICE_DESC)],
+        image: Annotated[
+            str,
+            Field(description=(
+                "刚部署上去的那个镜像引用（与 `rollout_deployment` 用的是同一个）。"
+                "本工具**只探正在跑这个镜像的 pod** —— 打旧 pod 得到的 200 什么都不证明。"
+            )),
+        ],
+        path: Annotated[
+            str,
+            Field(description=(
+                "**业务探针**：这次故障打到的那条链路（服务内相对路径，如 "
+                "`/quotation?orderId=ORD001`）。**原样取自 plan 的 `verification_probe.path`**，"
+                "不要自己拼。**留空 = 只探存活**（合法，用于没有 HTTP 链路的故障）。"
+            )),
+        ] = "",
+        expect: Annotated[
+            int,
+            Field(description="修好之后该返回的码（取自 plan 的 `verification_probe.expect`）"),
+        ] = 0,
+        broken_expect: Annotated[
+            int,
+            Field(description=(
+                "**故障态**返回的码（取自 plan 的 `verification_probe.broken_expect`）。"
+                "必须与 expect 不同 —— 相同说明这条探针证明不了修复，本工具会直接拒。"
+            )),
+        ] = 0,
+    ) -> dict:
+        """对刚部署上去的 pod 打探针（**只读**）：健康层 + 可选的业务链路。
+
+        - **健康层**（路径与端口）来自 **Deployment 自己声明的探针**，不需要你传；
+        - **业务层**由 `path`/`expect`/`broken_expect` 给（可留空 ⇒ 只探存活）。
+
+        返回 `passed` / `coverage`（`business` 或 `health_only`）/ 每条探针的结果。
+        `passed: false` 时**必须如实上报**，不要因为"部署成功了"就当成验证通过。
+        """
+        return await probe.probe_service(
+            service=service, image=image, path=path, expect=expect, broken_expect=broken_expect
+        )
+
+    return probe_service
+
+
 #: 只读工具（注册时标 readOnlyHint=True —— agent 侧据此**自动 ALLOW**）
 READ_ONLY_FACTORIES = {
     "get_deployment_status": _build_get_deployment_status,
+    "probe_service": _build_probe_service,
 }
 
 #: 写工具（必须显式标 readOnlyHint=False）

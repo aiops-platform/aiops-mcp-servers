@@ -25,6 +25,7 @@ testpaths = [
     "servers/git-mcp-server/tests",
     "servers/applog-mcp-server/tests",
     "servers/aiops-datasource-mcp-server/tests",
+    "servers/deploy-ops-mcp-server/tests",
 ]
 # 多 server 的 tests/ 下存在同名模块（如 test_server.py），用 importlib 模式避免收集冲突
 addopts = "-ra --import-mode=importlib"
